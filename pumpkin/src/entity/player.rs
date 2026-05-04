@@ -2522,11 +2522,25 @@ impl Player {
                     ))
                     .await;
 
-                self.client
-                    .enqueue_packet(&CGameEvent::new(
-                        GameEvent::ChangeGameMode,
-                        gamemode as i32 as f32,
-                    )).await;
+                match &self.client {
+                    crate::net::ClientPlatform::Java(client) => {
+                        client
+                            .enqueue_packet(&CGameEvent::new(
+                                GameEvent::ChangeGameMode,
+                                gamemode as i32 as f32,
+                            ))
+                            .await;
+                    }
+                    crate::net::ClientPlatform::Bedrock(client) => {
+                        client
+                            .send_game_packet(
+                                &pumpkin_protocol::bedrock::client::set_player_gamemode::CSetPlayerGamemode {
+                                    gamemode,
+                                },
+                            )
+                            .await;
+                    }
+                }
 
                 true
             }
