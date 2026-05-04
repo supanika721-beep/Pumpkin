@@ -1542,17 +1542,54 @@ impl Player {
     }
 
     pub async fn show_title(&self, text: &TextComponent, mode: &TitleMode) {
-        match mode {
-            TitleMode::Title => self.client.enqueue_packet(&CTitleText::new(text)).await,
-            TitleMode::SubTitle => self.client.enqueue_packet(&CSubtitle::new(text)).await,
-            TitleMode::ActionBar => self.client.enqueue_packet(&CActionBar::new(text)).await,
+        match &self.client {
+            ClientPlatform::Java(client) => match mode {
+                TitleMode::Title => client.enqueue_packet(&CTitleText::new(text)).await,
+                TitleMode::SubTitle => client.enqueue_packet(&CSubtitle::new(text)).await,
+                TitleMode::ActionBar => client.enqueue_packet(&CActionBar::new(text)).await,
+            },
+            ClientPlatform::Bedrock(client) => {
+                let action_type = match mode {
+                    TitleMode::Title => 2,
+                    TitleMode::SubTitle => 3,
+                    TitleMode::ActionBar => 4,
+                };
+                client
+                    .send_game_packet(
+                        &pumpkin_protocol::bedrock::client::set_title::CSetTitle::new(
+                            action_type,
+                            text.clone().get_text(),
+                            0,
+                            0,
+                            0,
+                        ),
+                    )
+                    .await;
+            }
         }
     }
 
     pub async fn send_title_animation(&self, fade_in: i32, stay: i32, fade_out: i32) {
-        self.client
-            .enqueue_packet(&CTitleAnimation::new(fade_in, stay, fade_out))
-            .await;
+        match &self.client {
+            ClientPlatform::Java(client) => {
+                client
+                    .enqueue_packet(&CTitleAnimation::new(fade_in, stay, fade_out))
+                    .await;
+            }
+            ClientPlatform::Bedrock(client) => {
+                client
+                    .send_game_packet(
+                        &pumpkin_protocol::bedrock::client::set_title::CSetTitle::new(
+                            5,
+                            String::new(),
+                            fade_in,
+                            stay,
+                            fade_out,
+                        ),
+                    )
+                    .await;
+            }
+        }
     }
 
     pub async fn spawn_particle(
