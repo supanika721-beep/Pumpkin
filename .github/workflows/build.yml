@@ -1,20 +1,34 @@
-# 🔍 Lihat isi folder dulu
-- name: List build output
-  run: |
-    echo "=== LIST FILE ==="
-    ls -lh target/aarch64-linux-android/release/
+name: Build Pumpkin Android ARM64
 
-# 🔍 Cari binary otomatis
-- name: Find binary
-  id: find_bin
-  run: |
-    BIN=$(find target/aarch64-linux-android/release/ -maxdepth 1 -type f -executable ! -name "*.so" ! -name "*.rlib" | head -n 1)
-    echo "Found binary: $BIN"
-    echo "bin=$BIN" >> $GITHUB_OUTPUT
+on:
+  workflow_dispatch:
 
-# 📦 Upload hanya binary
-- name: Upload small binary only
-  uses: actions/upload-artifact@v4
-  with:
-    name: pumpkin-only
-    path: ${{ steps.find_bin.outputs.bin }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout source
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 6. Lihat isi folder (biar jelas)
+      - name: List build output
+        run: |
+          echo "=== BUILD RESULT ==="
+          ls -lh target/aarch64-linux-android/release/
+
+      # 7. Cari binary otomatis
+      - name: Find binary
+        id: find_bin
+        run: |
+          BIN=$(find target/aarch64-linux-android/release/ -maxdepth 1 -type f -executable ! -name "*.so" ! -name "*.rlib" | head -n 1)
+          echo "Found binary: $BIN"
+          echo "bin=$BIN" >> $GITHUB_OUTPUT
+
+      # 8. Upload cuma binary kecil
+      - name: Upload binary only
+        uses: actions/upload-artifact@v4
+        with:
+          name: pumpkin-only
+          path: ${{ steps.find_bin.outputs.bin }}
