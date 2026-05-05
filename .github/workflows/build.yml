@@ -1,55 +1,20 @@
-name: Build Pumpkin Android ARM64
+# 🔍 Lihat isi folder dulu
+- name: List build output
+  run: |
+    echo "=== LIST FILE ==="
+    ls -lh target/aarch64-linux-android/release/
 
-on:
-  workflow_dispatch:
+# 🔍 Cari binary otomatis
+- name: Find binary
+  id: find_bin
+  run: |
+    BIN=$(find target/aarch64-linux-android/release/ -maxdepth 1 -type f -executable ! -name "*.so" ! -name "*.rlib" | head -n 1)
+    echo "Found binary: $BIN"
+    echo "bin=$BIN" >> $GITHUB_OUTPUT
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      # 1. Ambil source code
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # 2. Install Rust
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      # 3. Tambah target Android
-      - name: Add target
-        run: rustup target add aarch64-linux-android
-
-      # 4. Install Android NDK
-      - name: Install NDK
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip wget
-          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip android-ndk-r26d-linux.zip
-
-      # 5. Setup environment + build
-      - name: Build
-        run: |
-          export NDK=$PWD/android-ndk-r26d
-          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
-          export TARGET=aarch64-linux-android
-          export API=21
-
-          export CC=$TOOLCHAIN/bin/${TARGET}${API}-clang
-          export AR=$TOOLCHAIN/bin/llvm-ar
-
-          export PATH=$TOOLCHAIN/bin:$PATH
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
-
-          # optional tambahan biar aman
-          export RUSTFLAGS="-C link-arg=-landroid -C link-arg=-llog"
-
-          cargo build --release --target $TARGET
-
-      # 6. Upload hasil build
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pumpkin-android
-          path: target/aarch64-linux-android/release/
+# 📦 Upload hanya binary
+- name: Upload small binary only
+  uses: actions/upload-artifact@v4
+  with:
+    name: pumpkin-only
+    path: ${{ steps.find_bin.outputs.bin }}
