@@ -216,7 +216,7 @@ pub struct NormalUseArgs<'a> {
     pub world: &'a Arc<World>,
     pub block: &'a Block,
     pub position: &'a BlockPos,
-    pub player: &'a Player,
+    pub player: &'a Arc<Player>,
     pub hit: &'a BlockHitResult<'a>,
 }
 
@@ -225,7 +225,7 @@ pub struct UseWithItemArgs<'a> {
     pub world: &'a Arc<World>,
     pub block: &'a Block,
     pub position: &'a BlockPos,
-    pub player: &'a Player,
+    pub player: &'a Arc<Player>,
     pub hit: &'a BlockHitResult<'a>,
     pub item_stack: &'a Arc<Mutex<ItemStack>>,
 }

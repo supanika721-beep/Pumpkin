@@ -15,6 +15,7 @@ pub mod shulker_box;
 pub mod blast_furnace;
 pub mod brewing_stand;
 pub mod crafting_table;
+pub mod enchanting_table;
 pub mod furnace;
 pub mod grindstone;
 pub mod smoker;

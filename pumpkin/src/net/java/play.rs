@@ -2166,7 +2166,7 @@ impl JavaClient {
     #[expect(clippy::too_many_arguments)]
     async fn call_use_item_on(
         &self,
-        player: &Player,
+        player: &Arc<Player>,
         position: &BlockPos,
         cursor_pos: &Vector3<f32>,
         face: &BlockDirection,
@@ -2509,7 +2509,7 @@ impl JavaClient {
 
     pub async fn handle_close_container(
         &self,
-        player: &Player,
+        player: &Arc<Player>,
         _server: &Server,
         _packet: SCloseContainer,
     ) {

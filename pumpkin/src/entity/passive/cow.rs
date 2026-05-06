@@ -74,7 +74,7 @@ impl Mob for CowEntity {
 
     fn mob_interact<'a>(
         &'a self,
-        player: &'a Player,
+        player: &'a Arc<Player>,
         item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {

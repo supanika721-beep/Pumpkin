@@ -384,7 +384,7 @@ pub trait Mob: EntityBase + Send + Sync {
 
     fn mob_interact<'a>(
         &'a self,
-        _player: &'a Player,
+        _player: &'a Arc<Player>,
         _item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async { false })
@@ -526,7 +526,7 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn interact<'a>(
         &'a self,
-        player: &'a Player,
+        player: &'a Arc<Player>,
         item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move { self.mob_interact(player, item_stack).await })

@@ -268,7 +268,7 @@ impl VillagerEntity {
             .await;
     }
 
-    pub async fn open_trading_screen(&self, player: &Player) {
+    pub async fn open_trading_screen(&self, player: &Arc<Player>) {
         let self_weak = self.self_arc.lock().await;
         if let Some(self_arc) = self_weak.as_ref().and_then(std::sync::Weak::upgrade) {
             player.open_handled_screen(&*self_arc, None).await;
@@ -435,9 +435,10 @@ impl Mob for VillagerEntity {
 
     fn mob_interact<'a>(
         &'a self,
-        player: &'a crate::entity::player::Player,
+        player: &'a Arc<Player>,
         _item_stack: &'a mut pumpkin_data::item_stack::ItemStack,
     ) -> crate::entity::EntityBaseFuture<'a, bool> {
+        let player = player.clone();
         Box::pin(async move {
             if self.get_entity().age.load(Ordering::Relaxed) < 0 {
                 self.set_unhappy().await;
@@ -451,7 +452,7 @@ impl Mob for VillagerEntity {
             }
             drop(offers);
 
-            self.open_trading_screen(player).await;
+            self.open_trading_screen(&player).await;
 
             true
         })

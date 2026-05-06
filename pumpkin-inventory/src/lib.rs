@@ -36,6 +36,7 @@ pub mod container_click;
 pub mod crafting;
 pub mod double;
 pub mod drag_handler;
+pub mod enchanting;
 pub mod entity_equipment;
 mod error;
 pub mod furnace_like;
