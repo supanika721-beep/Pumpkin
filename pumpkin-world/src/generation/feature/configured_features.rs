@@ -385,6 +385,7 @@ impl ConfiguredFeature {
             Self::EndIsland(feature) => {
                 feature.generate(chunk, min_y, height, feature_name, random, pos)
             }
+            Self::SculkPatch(feature) => feature.generate(block_registry, chunk, random, pos),
             _ => false, // TODO
         }
     }
