@@ -5,7 +5,7 @@ use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 
-use crate::world::{BlockFlags, SimpleWorld};
+use crate::world::{BlockFlags, World};
 
 use super::BlockEntity;
 
@@ -42,12 +42,9 @@ impl BlockEntity for DaylightDetectorBlockEntity {
         self
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async {
-            if world.get_world_age().await % 20 == 0 && world.get_dimension().await.has_skylight {
+            if world.get_world_age().await % 20 == 0 && world.dimension.has_skylight {
                 Self::update_power(world, &self.position).await;
             }
         })
@@ -62,13 +59,13 @@ impl DaylightDetectorBlockEntity {
         Self { position }
     }
 
-    pub async fn update_power<W: SimpleWorld + ?Sized>(world: &Arc<W>, block_pos: &BlockPos) {
+    pub async fn update_power(world: &Arc<World>, block_pos: &BlockPos) {
         use std::f32::consts::PI;
 
         let (block, state) = world.get_block_and_state(block_pos).await;
         let mut props = DaylightDetectorProperties::from_state_id(state.id, block);
 
-        let level = world.get_level().await;
+        let level = world.level.clone();
 
         let inverted = props.inverted;
 
@@ -102,7 +99,7 @@ impl DaylightDetectorBlockEntity {
 
         let sky_light_level = level
             .light_engine
-            .get_sky_light_level(level, block_pos)
+            .get_sky_light_level(&level, block_pos)
             .await;
 
         let mut power = sky_light_level - ambient_darkness;

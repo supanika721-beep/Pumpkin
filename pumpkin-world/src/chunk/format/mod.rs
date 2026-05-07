@@ -8,7 +8,6 @@ use std::{
 };
 
 use bytes::Bytes;
-use futures::future::join_all;
 use pumpkin_data::{Block, chunk::ChunkStatus, fluid::Fluid};
 use pumpkin_nbt::{compound::NbtCompound, nbt_long_array};
 use rustc_hash::FxHashMap;
@@ -16,7 +15,6 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 use crate::{
-    block::entities::block_entity_from_nbt,
     chunk::{
         ChunkEntityData, ChunkReadingError, ChunkSerializingError,
         format::anvil::{SingleChunkDataSerializer, WORLD_DATA_VERSION},
@@ -26,6 +24,7 @@ use crate::{
     level::LevelFolder,
     tick::{ScheduledTick, scheduler::ChunkTickScheduler},
 };
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector2::Vector2;
 use serde::{Deserialize, Serialize};
 
@@ -67,36 +66,11 @@ impl Dirtiable for ChunkData {
     #[inline]
     fn mark_dirty(&self, flag: bool) {
         self.dirty.store(flag, Ordering::Relaxed);
-
-        if flag {
-            return;
-        }
-
-        // When marking chunk as clean, also clear all block entity dirty flags
-        if let Ok(block_entities) = self.block_entities.lock() {
-            for block_entity in block_entities.values() {
-                block_entity.clear_dirty();
-            }
-        }
     }
 
     #[inline]
     fn is_dirty(&self) -> bool {
-        // Check if chunk itself is dirty
-        if self.dirty.load(Ordering::Relaxed) {
-            return true;
-        }
-
-        // Also check if any block entities are dirty (e.g., inventory changes)
-        if let Ok(block_entities) = self.block_entities.lock() {
-            for block_entity in block_entities.values() {
-                if block_entity.is_dirty() {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.dirty.load(Ordering::Relaxed)
     }
 }
 
@@ -180,12 +154,14 @@ impl ChunkData {
             dirty: AtomicBool::new(false),
             block_ticks: ChunkTickScheduler::from_iter(chunk_data.block_ticks),
             fluid_ticks: ChunkTickScheduler::from_iter(chunk_data.fluid_ticks),
-            block_entities: {
+            pending_block_entities: {
                 let mut block_entities = FxHashMap::default();
                 for nbt in chunk_data.block_entities {
-                    let block_entity = block_entity_from_nbt(&nbt);
-                    if let Some(block_entity) = block_entity {
-                        block_entities.insert(block_entity.get_position(), block_entity);
+                    if let Some(x) = nbt.get_int("x")
+                        && let Some(y) = nbt.get_int("y")
+                        && let Some(z) = nbt.get_int("z")
+                    {
+                        block_entities.insert(BlockPos::new(x, y, z), nbt);
                     }
                 }
                 std::sync::Mutex::new(block_entities)
@@ -202,19 +178,10 @@ impl ChunkData {
             .light_populated
             .load(std::sync::atomic::Ordering::Relaxed);
 
-        let entities_to_serialize = {
-            let entities_guard = self.block_entities.lock().unwrap();
+        let block_entities_nbt = {
+            let entities_guard = self.pending_block_entities.lock().unwrap();
             entities_guard.values().cloned().collect::<Vec<_>>()
         };
-
-        let block_entities_nbt = join_all(entities_to_serialize.into_iter().map(
-            |block_entity| async move {
-                let mut nbt = NbtCompound::new();
-                block_entity.write_internal(&mut nbt).await;
-                nbt
-            },
-        ))
-        .await;
 
         fn extract_light_ref(light: Option<&LightContainer>) -> Option<&[u8]> {
             match light {

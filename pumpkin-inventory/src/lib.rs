@@ -31,6 +31,7 @@
 //! [`SyncHandler`]: sync_handler::SyncHandler
 
 pub mod anvil;
+pub mod beacon_screen_handler;
 pub mod brewing;
 pub mod container_click;
 pub mod crafting;

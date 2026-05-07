@@ -3,18 +3,11 @@ use std::sync::Arc;
 use pumpkin_data::{item_stack::ItemStack, recipes::CookingRecipe};
 use tokio::sync::Mutex;
 
-use crate::{
-    block::entities::{BlockEntity, PropertyDelegate},
-    inventory::{Clearable, Inventory},
-};
+use crate::block::entities::{BlockEntity, PropertyDelegate};
+pub use pumpkin_world::block::entities::ExperienceContainer;
+use pumpkin_world::inventory::{Clearable, Inventory};
 
 /// Trait for extracting smelting experience from cooking block entities.
-/// This is a separate dyn-compatible trait since `CookingBlockEntityBase` is not.
-pub trait ExperienceContainer: Send + Sync {
-    /// Extract and reset accumulated experience, returning the total as an integer
-    fn extract_experience(&self) -> i32;
-}
-
 pub trait CookingBlockEntityBase:
     Sync + Send + Inventory + PropertyDelegate + BlockEntity + Clearable
 {
@@ -130,10 +123,7 @@ macro_rules! impl_cooking_block_entity_base {
                 recipe: Option<&pumpkin_data::recipes::CookingRecipe>,
                 max_count: u8,
             ) -> bool {
-                let recipe = match recipe {
-                    Some(cooking_recipe) => cooking_recipe,
-                    None => return false,
-                };
+                let Some(recipe) = recipe else { return false };
 
                 let top_item_stack = self.items[0].lock().await;
                 let is_top_items_empty = top_item_stack.is_empty();
@@ -165,11 +155,10 @@ macro_rules! impl_cooking_block_entity_base {
                 if let Some(recipe) = recipe {
                     if can_accept_output {
                         let mut side_items = self.items[2].lock().await;
-                        let output_item = match pumpkin_data::item::Item::from_registry_key(
+                        let Some(output_item) = pumpkin_data::item::Item::from_registry_key(
                             recipe.result.id.strip_prefix("minecraft:").unwrap(),
-                        ) {
-                            Some(item) => item,
-                            None => return false,
+                        ) else {
+                            return false;
                         };
                         let output_item_stack = ItemStack::new(recipe.result.count, output_item);
 
@@ -243,7 +232,7 @@ macro_rules! impl_property_delegate_for_cooking {
 #[macro_export]
 macro_rules! impl_clearable_for_cooking {
     ($struct_name:ty) => {
-        impl $crate::inventory::Clearable for $struct_name {
+        impl pumpkin_world::inventory::Clearable for $struct_name {
             fn clear(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
                 Box::pin(async move {
                     for slot in self.items.iter() {
@@ -273,12 +262,12 @@ macro_rules! impl_experience_container_for_cooking {
 #[macro_export]
 macro_rules! impl_inventory_for_cooking {
     ($struct_name:ty) => {
-        impl $crate::inventory::Inventory for $struct_name {
+        impl pumpkin_world::inventory::Inventory for $struct_name {
             fn size(&self) -> usize {
                 self.items.len()
             }
 
-            fn is_empty(&self) -> $crate::inventory::InventoryFuture<'_, bool> {
+            fn is_empty(&self) -> pumpkin_world::inventory::InventoryFuture<'_, bool> {
                 Box::pin(async move {
                     for slot in self.items.iter() {
                         if !slot.lock().await.is_empty() {
@@ -292,14 +281,14 @@ macro_rules! impl_inventory_for_cooking {
             fn get_stack(
                 &self,
                 slot: usize,
-            ) -> $crate::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
                 Box::pin(async move { self.items[slot].clone() })
             }
 
             fn remove_stack(
                 &self,
                 slot: usize,
-            ) -> $crate::inventory::InventoryFuture<'_, ItemStack> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
                 Box::pin(async move {
                     let mut removed = ItemStack::EMPTY.clone();
                     let mut guard = self.items[slot].lock().await;
@@ -313,9 +302,10 @@ macro_rules! impl_inventory_for_cooking {
                 &self,
                 slot: usize,
                 amount: u8,
-            ) -> $crate::inventory::InventoryFuture<'_, ItemStack> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
                 Box::pin(async move {
-                    let res = $crate::inventory::split_stack(&self.items, slot, amount).await;
+                    let res =
+                        pumpkin_world::inventory::split_stack(&self.items, slot, amount).await;
                     self.mark_dirty();
                     res
                 })
@@ -325,7 +315,7 @@ macro_rules! impl_inventory_for_cooking {
                 &self,
                 slot: usize,
                 stack: ItemStack,
-            ) -> $crate::inventory::InventoryFuture<'_, ()> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
                 Box::pin(async move {
                     let furnace_stack = self.get_stack(slot).await;
                     let mut furnace_stack = furnace_stack.lock().await;
@@ -370,9 +360,10 @@ macro_rules! impl_inventory_for_cooking {
 macro_rules! impl_block_entity_for_cooking {
     ($struct_name:ty,$recipe_kind:expr) => {
         impl $crate::block::entities::BlockEntity for $struct_name {
+            #[expect(clippy::too_many_lines)]
             fn tick<'a>(
                 &'a self,
-                world: &'a Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<$crate::world::World>,
             ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
                 Box::pin(async move {
                     let is_burning = self.is_burning();
@@ -586,7 +577,9 @@ macro_rules! impl_block_entity_for_cooking {
                 })
             }
 
-            fn get_inventory(self: Arc<Self>) -> Option<Arc<dyn $crate::inventory::Inventory>> {
+            fn get_inventory(
+                self: Arc<Self>,
+            ) -> Option<Arc<dyn pumpkin_world::inventory::Inventory>> {
                 Some(self)
             }
 

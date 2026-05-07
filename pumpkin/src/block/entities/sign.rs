@@ -139,11 +139,12 @@ impl Default for Text {
         Self {
             has_glowing_text: AtomicBool::new(false),
             color: AtomicI8::new(DyeColor::default() as i8),
-            messages: Default::default(),
+            messages: Arc::default(),
         }
     }
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl From<Text> for NbtTag {
     fn from(value: Text) -> Self {
         let mut nbt = NbtCompound::new();
@@ -166,6 +167,7 @@ impl From<Text> for NbtTag {
     }
 }
 
+#[allow(clippy::fallible_impl_from)]
 impl From<NbtTag> for Text {
     fn from(tag: NbtTag) -> Self {
         let nbt = tag.extract_compound().unwrap();

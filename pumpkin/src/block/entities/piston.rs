@@ -5,7 +5,7 @@ use pumpkin_data::{Block, BlockDirection, BlockState};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 
-use crate::world::{BlockFlags, SimpleWorld};
+use crate::world::{BlockFlags, World};
 
 use super::BlockEntity;
 
@@ -22,7 +22,7 @@ pub struct PistonBlockEntity {
 impl PistonBlockEntity {
     pub const ID: &'static str = "minecraft:piston";
 
-    pub async fn finish(&self, world: Arc<dyn SimpleWorld>) {
+    pub async fn finish(&self, world: Arc<World>) {
         if self.last_progress.load() < 1.0 {
             let pos = self.position;
             world.remove_block_entity(&pos).await;
@@ -61,10 +61,7 @@ impl BlockEntity for PistonBlockEntity {
         self.position
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             let current_progress = self.current_progress.load();
             self.last_progress.store(current_progress);

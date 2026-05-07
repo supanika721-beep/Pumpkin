@@ -10,8 +10,8 @@ use pumpkin_util::math::position::BlockPos;
 use tokio::sync::Mutex;
 
 use crate::block::entities::BlockEntity;
-use crate::inventory::{Clearable, Inventory, InventoryFuture};
-use crate::world::SimpleWorld;
+use crate::world::World;
+use pumpkin_world::inventory::{Clearable, Inventory, InventoryFuture};
 
 /// Matches vanilla's `JukeboxBlockEntity`
 pub struct JukeboxBlockEntity {
@@ -77,10 +77,7 @@ impl BlockEntity for JukeboxBlockEntity {
         })
     }
 
-    fn tick<'a>(
-        &'a self,
-        _world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, _world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             // Increment ticks if we're playing
             let song_length = self.song_length_ticks.load(Ordering::Relaxed);

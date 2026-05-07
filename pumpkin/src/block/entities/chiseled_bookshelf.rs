@@ -15,12 +15,12 @@ use std::{
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::inventory::InventoryFuture;
 use crate::{
     block::entities::BlockEntity,
-    inventory::{Clearable, Inventory, split_stack},
-    world::{BlockFlags, SimpleWorld},
+    world::{BlockFlags, World},
 };
+use pumpkin_world::inventory::InventoryFuture;
+use pumpkin_world::inventory::{Clearable, Inventory, split_stack};
 
 pub struct ChiseledBookshelfBlockEntity {
     pub position: BlockPos,
@@ -108,7 +108,7 @@ impl ChiseledBookshelfBlockEntity {
     pub async fn update_state(
         &self,
         mut properties: ChiseledBookshelfLikeProperties,
-        world: Arc<dyn SimpleWorld>,
+        world: Arc<World>,
         slot: i8,
     ) {
         if slot >= 0 && slot < self.items.len() as i8 {

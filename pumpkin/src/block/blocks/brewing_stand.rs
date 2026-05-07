@@ -6,17 +6,17 @@ use crate::block::{
     {BlockBehaviour, NormalUseArgs},
 };
 
+use crate::block::entities::brewing_stand::BrewingStandBlockEntity;
 use pumpkin_data::translation;
 use pumpkin_inventory::player::player_inventory::PlayerInventory;
 use pumpkin_inventory::screen_handler::{BoxFuture, ScreenHandlerFactory, SharedScreenHandler};
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::text::TextComponent;
-use pumpkin_world::block::entities::brewing_stand::BrewingStandBlockEntity;
 use pumpkin_world::inventory::Inventory;
 
 struct BrewingScreenFactory(
     Arc<dyn Inventory>,
-    Arc<dyn pumpkin_world::block::entities::PropertyDelegate>,
+    Arc<dyn crate::block::entities::PropertyDelegate>,
 );
 
 impl ScreenHandlerFactory for BrewingScreenFactory {

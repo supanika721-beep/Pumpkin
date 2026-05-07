@@ -6,6 +6,7 @@ use crate::block::{
     {BlockBehaviour, NormalUseArgs},
 };
 
+use crate::block::entities::shulker_box::ShulkerBoxBlockEntity;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::tag::{self};
 use pumpkin_data::translation;
@@ -16,7 +17,6 @@ use pumpkin_inventory::screen_handler::{
 };
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::BlockStateId;
-use pumpkin_world::block::entities::shulker_box::ShulkerBoxBlockEntity;
 use pumpkin_world::inventory::Inventory;
 use tokio::sync::Mutex;
 

@@ -1,8 +1,8 @@
 use crate::block::blocks::anvil::AnvilBlock;
-
 use crate::block::blocks::banners::BannerBlock;
 use crate::block::blocks::barrel::BarrelBlock;
 use crate::block::blocks::barrier::BarrierBlock;
+use crate::block::blocks::beacon::BeaconBlock;
 use crate::block::blocks::bed::BedBlock;
 use crate::block::blocks::brewing_stand::BrewingStandBlock;
 use crate::block::blocks::cake::CakeBlock;
@@ -179,6 +179,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
 
     // Blocks
     manager.register(AnvilBlock);
+    manager.register(BeaconBlock);
     manager.register(BedBlock);
     manager.register(SaplingBlock);
     manager.register(CactusBlock);

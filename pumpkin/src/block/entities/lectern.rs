@@ -11,10 +11,8 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-use crate::{
-    block::entities::BlockEntity,
-    inventory::{Clearable, Inventory, InventoryFuture},
-};
+use crate::block::entities::BlockEntity;
+use pumpkin_world::inventory::{Clearable, Inventory, InventoryFuture};
 
 pub struct LecternBlockEntity {
     pub position: BlockPos,
@@ -38,8 +36,10 @@ impl BlockEntity for LecternBlockEntity {
         let book = nbt
             .get_compound("Book")
             .and_then(ItemStack::read_item_stack)
-            .map(|stack| Arc::new(Mutex::new(stack)))
-            .unwrap_or_else(|| Arc::new(Mutex::new(ItemStack::EMPTY.clone())));
+            .map_or_else(
+                || Arc::new(Mutex::new(ItemStack::EMPTY.clone())),
+                |stack| Arc::new(Mutex::new(stack)),
+            );
 
         Self {
             position,

@@ -97,3 +97,5 @@ pub mod tnt;
 
 // Misc / abstract
 pub mod abstract_wall_mounting;
+
+pub mod beacon;

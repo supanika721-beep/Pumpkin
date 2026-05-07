@@ -1,3 +1,4 @@
+use crate::block::entities::BlockEntity;
 use crate::command::{
     CommandError, CommandExecutor, CommandResult, CommandSender,
     args::{
@@ -7,7 +8,6 @@ use crate::command::{
     tree::{CommandTree, builder::argument},
 };
 use pumpkin_util::{math::vector3::Vector3, text::TextComponent};
-use pumpkin_world::block::entities::BlockEntity;
 const NAMES: [&str; 1] = ["particle"];
 
 const DESCRIPTION: &str = "Spawns a Particle at position.";

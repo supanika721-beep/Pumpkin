@@ -1,5 +1,5 @@
 use crate::block::entities::BlockEntity;
-use crate::world::SimpleWorld;
+use crate::world::World;
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::block_properties::HorizontalFacing;
 use pumpkin_data::sound::{Sound, SoundCategory};
@@ -61,10 +61,7 @@ impl BlockEntity for BellBlockEntity {
         Self::new(position)
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if self.ringing.load() {
                 self.ring_ticks.fetch_add(1);

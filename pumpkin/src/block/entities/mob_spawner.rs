@@ -15,7 +15,7 @@ use pumpkin_util::math::{
     vector3::Vector3,
 };
 
-use crate::{block::entities::BlockEntity, world::SimpleWorld};
+use crate::{block::entities::BlockEntity, world::World};
 
 pub struct MobSpawnerBlockEntity {
     pub position: BlockPos,
@@ -69,7 +69,7 @@ impl MobSpawnerBlockEntity {
 }
 
 impl MobSpawnerBlockEntity {
-    async fn update_spawns(&self, world: &Arc<dyn SimpleWorld>) {
+    async fn update_spawns(&self, world: &Arc<World>) {
         let min_delay = self.min_delay;
         let max_delay = self.max_delay;
 
@@ -98,10 +98,7 @@ impl BlockEntity for MobSpawnerBlockEntity {
         self.position
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if let Some(entity_type) = &self.entity_type.load() {
                 if self.delay.load(Ordering::Relaxed) == -1 {
@@ -140,7 +137,14 @@ impl BlockEntity for MobSpawnerBlockEntity {
                     {
                         continue;
                     }
-                    world.clone().spawn_from_type(entity_type, spawn_pos).await;
+                    let entity = crate::entity::r#type::from_type(
+                        entity_type,
+                        spawn_pos,
+                        world,
+                        uuid::Uuid::new_v4(),
+                    )
+                    .await;
+                    world.spawn_entity(entity).await;
                     world
                         .sync_world_event(WorldEvent::ParticlesMobblockSpawn, self.position, 0)
                         .await;
