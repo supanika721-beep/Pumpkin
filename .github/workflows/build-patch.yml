@@ -2,7 +2,7 @@ name: Build PumpkinMC for Android
 
 on:
   push:
-    branches: [ main, master, dev ]
+    branches: [ main, master, dev, android-build-workflow ]
   pull_request:
     branches: [ main, master, dev ]
   workflow_dispatch:
@@ -12,16 +12,13 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  build:
-    name: Build PumpkinMC Android Binary
+  build-arm64:
+    name: Build PumpkinMC Android Binary (ARM64)
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout PumpkinMC repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          repository: Pumpkin-MC/Pumpkin
-          path: pumpkin-src
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -47,11 +44,8 @@ jobs:
           target-dir = "target"
           EOF
 
-      - name: Apply Android patches to PumpkinMC
+      - name: Create Android module
         run: |
-          cd pumpkin-src
-          
-          # Patch 1: Create Android-specific module
           mkdir -p pumpkin/src/android
           cat > pumpkin/src/android/mod.rs << 'EOF'
           //! Android-specific configuration and utilities
@@ -76,75 +70,63 @@ jobs:
           }
           EOF
 
-          # Patch 2: Modify pumpkin/src/lib.rs to disable TTY on Android and add android module
+      - name: Add Android module to lib.rs
+        run: |
+          # Add the android module declaration at the beginning of lib.rs
           sed -i '1i #[cfg(target_os = "android")]\npub mod android;' pumpkin/src/lib.rs
-          
-          # Patch 3: Disable WASI check for Android (modify main.rs)
+
+      - name: Fix WASI compile error for Android
+        run: |
+          # Modify the WASI check to exclude Android
           sed -i 's/#\[cfg(target_os = "wasi")\]/#[cfg(all(target_os = "wasi", not(target_os = "android")))]/g' pumpkin/src/main.rs
 
-      - name: Patch init_logger for Android
+      - name: Disable TTY mode on Android
         run: |
-          cd pumpkin-src
+          python3 << 'PYEOF'
+          import re
           
-          # Create a patch file for the logger initialization
-          cat > android-logger.patch << 'EOF'
-          --- a/pumpkin/src/lib.rs
-          +++ b/pumpkin/src/lib.rs
-          @@ -96,7 +96,13 @@ pub fn init_logger(advanced_config: &AdvancedConfiguration) {
-                   let (logger, rl): (
-                       Box<dyn std::io::Write + Send + 'static>,
-                       Option<Editor<PumpkinCommandCompleter, FileHistory>>,
-          -        ) = if advanced_config.commands.use_tty && stdin().is_terminal() {
-          +        ) = if cfg!(target_os = "android") {
-          +            // Android doesn't have a real TTY, use simple stdout
-          +            (Box::new(std::io::stdout()), None)
-          +        } else if advanced_config.commands.use_tty && stdin().is_terminal() {
-          +            // Standard TTY mode for other platforms
-                       let rl_config = Config::builder()
-                           .auto_add_history(true)
-                           .completion_type(rustyline::CompletionType::List)
-          EOF
-
-      - name: Apply logger patch
-        run: |
-          cd pumpkin-src
+          with open('pumpkin/src/lib.rs', 'r') as f:
+              content = f.read()
           
-          # Manually apply the TTY disable logic with sed
-          sed -i 's/if advanced_config.commands.use_tty && stdin().is_terminal() {/if cfg!(target_os = "android") {\n            (Box::new(std::io::stdout()), None)\n        } else if advanced_config.commands.use_tty \&\& stdin().is_terminal() {/g' pumpkin/src/lib.rs || true
+          # Find the problematic line and replace it
+          old_pattern = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
+          new_text = r'''\1) = if cfg!(target_os = "android") {
+            \1    // Android doesn't have a real TTY, use simple stdout
+            \1    (Box::new(std::io::stdout()), None)
+            \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {
+            \1    // Standard TTY mode for other platforms'''
+          
+          content = re.sub(old_pattern, new_text, content)
+          
+          with open('pumpkin/src/lib.rs', 'w') as f:
+              f.write(content)
+          PYEOF
 
       - name: Build PumpkinMC for Android ARM64
         run: |
-          cd pumpkin-src
-          
           # Set environment variables for cross-compilation
           export CC_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
           export AR_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CC_aarch64_linux_android}"
           
-          # Build in release mode
+          # Build in release mode with optimizations
           cargo build --release --target aarch64-linux-android --verbose
           
-          echo "Build completed successfully!"
+          echo "✅ Build completed successfully!"
           ls -lh target/aarch64-linux-android/release/pumpkin
 
       - name: Strip debug symbols
         run: |
-          cd pumpkin-src
           ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip target/aarch64-linux-android/release/pumpkin
-          echo "Binary stripped successfully!"
+          echo "✅ Binary stripped successfully!"
           ls -lh target/aarch64-linux-android/release/pumpkin
 
       - name: Create release artifacts
         run: |
-          cd pumpkin-src
           mkdir -p release_artifacts
           
           # Copy the binary
           cp target/aarch64-linux-android/release/pumpkin release_artifacts/pumpkin-arm64
-          
-          # Get version info
-          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          echo "PUMPKIN_VERSION=$VERSION" >> $GITHUB_ENV
           
           # Create checksums
           cd release_artifacts
@@ -152,43 +134,32 @@ jobs:
           ls -lah
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pumpkin-android-arm64
-          path: pumpkin-src/release_artifacts/
+          path: release_artifacts/
           retention-days: 30
-
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: pumpkin-src/release_artifacts/*
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Summary
         run: |
-          echo "## Android Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Target**: aarch64-linux-android" >> $GITHUB_STEP_SUMMARY
-          echo "- **NDK Version**: r27b" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Type**: Release (Optimized)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Output**: \`pumpkin-arm64\`" >> $GITHUB_STEP_SUMMARY
-          cd pumpkin-src/release_artifacts
-          echo "- **File Size**: $(du -h pumpkin-arm64 | cut -f1)" >> $GITHUB_STEP_SUMMARY
-          echo "- **SHA256**: \`$(cat SHA256SUMS | cut -d' ' -f1)\`" >> $GITHUB_STEP_SUMMARY
+          echo "## 🎯 Android ARM64 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Target** | aarch64-linux-android |" >> $GITHUB_STEP_SUMMARY
+          echo "| **NDK Version** | r27b |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Type** | Release (Optimized) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Binary Name** | pumpkin-arm64 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **File Size** | $(du -h release_artifacts/pumpkin-arm64 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SHA256** | \`$(cat release_artifacts/SHA256SUMS | cut -d' ' -f1)\` |" >> $GITHUB_STEP_SUMMARY
 
   build-arm32:
     name: Build PumpkinMC Android Binary (ARM32)
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout PumpkinMC repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          repository: Pumpkin-MC/Pumpkin
-          path: pumpkin-src
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -214,11 +185,8 @@ jobs:
           target-dir = "target"
           EOF
 
-      - name: Apply Android patches to PumpkinMC
+      - name: Create Android module
         run: |
-          cd pumpkin-src
-          
-          # Create Android module (same as above)
           mkdir -p pumpkin/src/android
           cat > pumpkin/src/android/mod.rs << 'EOF'
           //! Android-specific configuration and utilities
@@ -239,35 +207,72 @@ jobs:
           }
           EOF
 
+      - name: Add Android module to lib.rs
+        run: |
           sed -i '1i #[cfg(target_os = "android")]\npub mod android;' pumpkin/src/lib.rs
+
+      - name: Fix WASI compile error for Android
+        run: |
           sed -i 's/#\[cfg(target_os = "wasi")\]/#[cfg(all(target_os = "wasi", not(target_os = "android")))]/g' pumpkin/src/main.rs
+
+      - name: Disable TTY mode on Android
+        run: |
+          python3 << 'PYEOF'
+          import re
+          
+          with open('pumpkin/src/lib.rs', 'r') as f:
+              content = f.read()
+          
+          old_pattern = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
+          new_text = r'''\1) = if cfg!(target_os = "android") {
+            \1    // Android doesn't have a real TTY, use simple stdout
+            \1    (Box::new(std::io::stdout()), None)
+            \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {
+            \1    // Standard TTY mode for other platforms'''
+          
+          content = re.sub(old_pattern, new_text, content)
+          
+          with open('pumpkin/src/lib.rs', 'w') as f:
+              f.write(content)
+          PYEOF
 
       - name: Build PumpkinMC for Android ARM32
         run: |
-          cd pumpkin-src
-          
           export CC_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
           export AR_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi-ar"
           export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="${CC_armv7_linux_androideabi}"
           
           cargo build --release --target armv7-linux-androideabi --verbose
           
-          echo "ARM32 Build completed!"
+          echo "✅ ARM32 Build completed!"
           ls -lh target/armv7-linux-androideabi/release/pumpkin
 
-      - name: Strip and upload ARM32
+      - name: Strip and prepare ARM32
         run: |
-          cd pumpkin-src
           ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip target/armv7-linux-androideabi/release/pumpkin
           
           mkdir -p release_artifacts_arm32
           cp target/armv7-linux-androideabi/release/pumpkin release_artifacts_arm32/pumpkin-arm32
           cd release_artifacts_arm32
           sha256sum pumpkin-arm32 > SHA256SUMS
+          ls -lah
 
       - name: Upload ARM32 artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: pumpkin-android-arm32
-          path: pumpkin-src/release_artifacts_arm32/
+          path: release_artifacts_arm32/
           retention-days: 30
+
+      - name: Build Summary
+        run: |
+          echo "## 🎯 Android ARM32 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Target** | armv7-linux-androideabi |" >> $GITHUB_STEP_SUMMARY
+          echo "| **NDK Version** | r27b |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Build Type** | Release (Optimized) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Binary Name** | pumpkin-arm32 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **File Size** | $(du -h release_artifacts_arm32/pumpkin-arm32 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SHA256** | \`$(cat release_artifacts_arm32/SHA256SUMS | cut -d' ' -f1)\` |" >> $GITHUB_STEP_SUMMARY
