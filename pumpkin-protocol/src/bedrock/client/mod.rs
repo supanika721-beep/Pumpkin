@@ -1,3 +1,4 @@
+pub mod available_commands;
 pub mod chunk_radius_update;
 pub mod container_open;
 pub mod correct_player_move;
@@ -24,4 +25,4 @@ pub mod set_time;
 pub mod set_title;
 pub mod start_game;
 pub mod update_abilities;
-pub mod update_artributes;
+pub mod update_attributes;

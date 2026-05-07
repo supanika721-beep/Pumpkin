@@ -4,9 +4,9 @@ use crate::attributes::Attributes;
 use crate::data_component::DataComponent;
 use crate::data_component::DataComponent::{
     AttributeModifiers, BlocksAttacks, Consumable, CustomData, CustomName, Damage, DamageResistant,
-    DeathProtection, Enchantments, Equippable, FireworkExplosion, Fireworks, Food, ItemModel,
-    ItemName, JukeboxPlayable, MaxDamage, MaxStackSize, PotionContents, StoredEnchantments, Tool,
-    Unbreakable, UseCooldown, Weapon,
+    DeathProtection, Enchantable, Enchantments, Equippable, FireworkExplosion, Fireworks, Food,
+    ItemModel, ItemName, JukeboxPlayable, MaxDamage, MaxStackSize, PotionContents,
+    StoredEnchantments, Tool, Unbreakable, UseCooldown, Weapon,
 };
 use crate::effect::{self, StatusEffect};
 use crate::entity_type::EntityType;
@@ -274,7 +274,7 @@ impl DataComponentImpl for ItemModelImpl {
 pub struct LoreImpl;
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct RarityImpl;
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq, Default)]
 pub struct EnchantmentsImpl {
     pub enchantment: Cow<'static, [(&'static Enchantment, i32)]>,
 }
@@ -1377,7 +1377,12 @@ impl Hash for EntityTypeOrTag {
 }
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct EnchantableImpl;
+pub struct EnchantableImpl {
+    pub value: i32,
+}
+impl DataComponentImpl for EnchantableImpl {
+    default_impl!(Enchantable);
+}
 #[derive(Clone, Hash, PartialEq)]
 pub struct EquippableImpl {
     pub slot: &'static EquipmentSlot,

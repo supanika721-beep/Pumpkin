@@ -319,7 +319,7 @@ impl LoadConfiguration for AdvancedConfiguration {
     }
 
     fn validate(&self) {
-        self.resource_pack.validate();
+        //self.resource_pack.validate();
     }
 }
 

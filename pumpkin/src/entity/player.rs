@@ -68,7 +68,9 @@ use pumpkin_protocol::java::client::play::{
     CTitleAnimation, CTitleText, CUnloadChunk, CUpdateMobEffect, CUpdateTime, GameEvent, Metadata,
     PlayerAction, PlayerInfoFlags, PreviousMessage,
 };
-use pumpkin_protocol::java::server::play::{SClickSlot, SRenameItem, SlotActionType};
+use pumpkin_protocol::java::server::play::{
+    SClickSlot, SContainerButtonClick, SRenameItem, SlotActionType,
+};
 use pumpkin_util::math::{
     boundingbox::BoundingBox, experience, position::BlockPos, vector2::Vector2, vector3::Vector3,
 };
@@ -493,6 +495,7 @@ pub struct Player {
     pub tab_list_order: AtomicI32,
     pub tab_list_latency: AtomicI32,
     pub tab_list_listed: AtomicBool,
+    pub enchantment_seed: AtomicI32,
 }
 
 impl Player {
@@ -548,6 +551,7 @@ impl Player {
             // TODO: Load this from previous instance
             hunger_manager: HungerManager::default(),
             current_block_destroy_stage: AtomicI32::new(-1),
+            enchantment_seed: AtomicI32::new(rand::random()),
             open_container: AtomicCell::new(None),
             open_container_pos: AtomicCell::new(None),
             tick_counter: AtomicI32::new(0),
@@ -2080,7 +2084,12 @@ impl Player {
         self.permission_lvl.store(lvl);
         self.send_permission_lvl_update().await;
 
-        client_suggestions::send_c_commands_packet(self, server, command_dispatcher).await;
+        if let ClientPlatform::Bedrock(_) = &self.client {
+            client_suggestions::send_bedrock_commands_packet(self, server, command_dispatcher)
+                .await;
+        } else {
+            client_suggestions::send_c_commands_packet(self, server, command_dispatcher).await;
+        }
     }
 
     /// Sends the world time to only this player.
@@ -3058,7 +3067,7 @@ impl Player {
             .store(current_id % 100 + 1, Ordering::Relaxed);
     }
 
-    pub async fn close_handled_screen(&self) {
+    pub async fn close_handled_screen(self: &Arc<Self>) {
         self.client
             .enqueue_packet(&CCloseContainer::new(
                 self.current_screen_handler
@@ -3073,27 +3082,31 @@ impl Player {
         self.on_handled_screen_closed().await;
     }
 
-    pub async fn on_handled_screen_closed(&self) {
-        // let window_type = {
-        //     let handler_lock = self.current_screen_handler.lock().await;
-        //     let mut handler = handler_lock.lock().await;
-        //     let wt = handler.window_type();
-        //     handler.on_closed(self).await;
-        //     wt
-        // };
+    pub async fn on_handled_screen_closed(self: &Arc<Self>) {
+        let current_screen_handler: Arc<Mutex<dyn ScreenHandler>> =
+            self.current_screen_handler.lock().await.clone();
 
-        // TODO
-        // if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
-        //     server
-        //         .plugin_manager
-        //         .fire(InventoryCloseEvent::new(&self, window_type))
-        //         .await;
-        // }
+        let window_type = {
+            let mut handler = current_screen_handler.lock().await;
+            let wt = handler.window_type();
+            handler.on_closed(self.as_ref()).await;
+            wt
+        };
+
+        if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
+            server
+                .plugin_manager
+                .fire(
+                    crate::plugin::api::events::player::inventory_close::InventoryCloseEvent::new(
+                        self,
+                        window_type,
+                    ),
+                )
+                .await;
+        }
 
         let player_screen_handler: Arc<Mutex<dyn ScreenHandler>> =
             self.player_screen_handler.clone();
-        let current_screen_handler: Arc<Mutex<dyn ScreenHandler>> =
-            self.current_screen_handler.lock().await.clone();
 
         if !Arc::ptr_eq(&player_screen_handler, &current_screen_handler) {
             player_screen_handler
@@ -3133,7 +3146,7 @@ impl Player {
     }
 
     pub async fn open_handled_screen(
-        &self,
+        self: &Arc<Self>,
         screen_handler_factory: &dyn ScreenHandlerFactory,
         block_pos: Option<BlockPos>,
     ) -> Option<u8> {
@@ -3155,7 +3168,7 @@ impl Player {
             .create_screen_handler(
                 self.screen_handler_sync_id.load(Ordering::Relaxed),
                 &self.inventory,
-                self,
+                self.as_ref(),
             )
             .await
         {
@@ -3183,7 +3196,7 @@ impl Player {
     }
 
     pub async fn open_handled_screen_direct(
-        &self,
+        self: &Arc<Self>,
         screen_handler: Arc<Mutex<dyn ScreenHandler>>,
         title: TextComponent,
     ) {
@@ -3427,7 +3440,20 @@ impl Player {
         }
     }
 
-    /// Check if the player has a specific permission
+    /// Handles when the player clicks a button in a container (e.g. Enchantment Table)
+    pub async fn on_container_button_click(self: &Arc<Self>, packet: SContainerButtonClick) {
+        let screen_handler = self.current_screen_handler.lock().await.clone();
+        let mut screen_handler = screen_handler.lock().await;
+
+        if i32::from(screen_handler.sync_id()) != packet.window_id.0 {
+            return;
+        }
+
+        screen_handler
+            .on_button_click(self.as_ref(), packet.button_id.0)
+            .await;
+    }
+
     pub async fn has_permission(self: &Arc<Self>, server: &Server, node: &str) -> bool {
         let perm_manager = server.permission_manager.read().await;
         let result = perm_manager
@@ -3665,6 +3691,7 @@ impl NBTStorage for Player {
             } else {
                 nbt.put_bool(false);
             }
+            nbt.put_int(self.enchantment_seed.load(Ordering::Relaxed));
         })
     }
 
@@ -3716,6 +3743,8 @@ impl NBTStorage for Player {
                     force,
                 }));
             }
+            self.enchantment_seed
+                .store(nbt.get_int().unwrap_or(rand::random()), Ordering::Relaxed);
         })
     }
 }
@@ -4277,6 +4306,16 @@ impl InventoryPlayer for Player {
     fn add_experience_levels(&self, levels: i32) -> PlayerFuture<'_, ()> {
         Box::pin(async move {
             self.add_experience_levels(levels).await;
+        })
+    }
+
+    fn enchantment_seed(&self) -> i32 {
+        self.enchantment_seed.load(Ordering::Relaxed)
+    }
+
+    fn set_enchantment_seed(&self, seed: i32) -> PlayerFuture<'_, ()> {
+        Box::pin(async move {
+            self.enchantment_seed.store(seed, Ordering::Relaxed);
         })
     }
 

@@ -160,6 +160,7 @@ use crate::block::blocks::chain::ChainBlock;
 use crate::block::blocks::cobweb::CobwebBlock;
 use crate::block::blocks::crafting_table::CraftingTableBlock;
 use crate::block::blocks::dragon_egg::DragonEggBlock;
+use crate::block::blocks::enchanting_table::EnchantingTableBlock;
 use crate::block::blocks::end_rod::EndRodBlock;
 use crate::block::blocks::ender_chest::EnderChestBlock;
 use crate::block::blocks::hopper::HopperBlock;
@@ -194,6 +195,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(CopperChestBlock);
     manager.register(EnderChestBlock);
     manager.register(CraftingTableBlock);
+    manager.register(EnchantingTableBlock);
     manager.register(DirtPathBlock);
     manager.register(DoorBlock);
     manager.register(FarmlandBlock);
@@ -491,7 +493,7 @@ impl BlockRegistry {
     pub async fn on_use(
         &self,
         block: &Block,
-        player: &Player,
+        player: &Arc<Player>,
         position: &BlockPos,
         hit: &BlockHitResult<'_>,
         server: &Server,
@@ -530,7 +532,7 @@ impl BlockRegistry {
     pub async fn use_with_item(
         &self,
         block: &Block,
-        player: &Player,
+        player: &Arc<Player>,
         position: &BlockPos,
         hit: &BlockHitResult<'_>,
         item_stack: &Arc<Mutex<ItemStack>>,
@@ -557,7 +559,7 @@ impl BlockRegistry {
     pub async fn use_with_item_fluid(
         &self,
         fluid: &Fluid,
-        player: &Player,
+        player: &Arc<Player>,
         position: BlockPos,
         item: &Item,
         server: &Server,

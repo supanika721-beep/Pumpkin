@@ -80,7 +80,7 @@ use pumpkin_protocol::{
             creative_content::{CreativeContent, Group},
             gamerules_changed::GameRules,
             start_game::{Experiments, GamePublishSetting, LevelSettings},
-            update_artributes::{Attribute, CUpdateAttributes},
+            update_attributes::{Attribute, CUpdateAttributes},
         },
         network_item::NetworkItemDescriptor,
         server::text::SText,
@@ -1739,6 +1739,12 @@ impl World {
         client.send_game_packet(&actor_data).await;
 
         player.send_abilities_update().await;
+        {
+            let command_dispatcher = server.command_dispatcher.read().await;
+
+            client_suggestions::send_bedrock_commands_packet(&player, server, &command_dispatcher)
+                .await;
+        };
 
         let mut frame_set = FrameSet::default();
 

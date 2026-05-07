@@ -95,15 +95,52 @@ impl ItemStack {
         None
     }
     pub fn get_data_component_mut<T: DataComponentImpl + 'static>(&mut self) -> Option<&mut T> {
-        let to_get_id = &T::get_enum();
-        for (id, component) in &mut self.patch {
-            if id == to_get_id {
-                return component
-                    .as_mut()
-                    .map(|component| get_mut::<T>(component.as_mut()));
+        let to_get_id = T::get_enum();
+        if let Some(index) = self.patch.iter().position(|(id, _)| *id == to_get_id) {
+            return self.patch[index]
+                .1
+                .as_mut()
+                .map(|component| get_mut::<T>(component.as_mut()));
+        }
+
+        // If not in patch, clone from item to patch and return mut
+        let mut cloned = None;
+        for (id, component) in self.item.components {
+            if *id == to_get_id {
+                cloned = Some((*id, Some(component.clone_dyn())));
+                break;
             }
         }
+        if let Some((id, component)) = cloned {
+            self.patch.push((id, component));
+            return self
+                .patch
+                .last_mut()
+                .unwrap()
+                .1
+                .as_mut()
+                .map(|c| get_mut::<T>(c.as_mut()));
+        }
         None
+    }
+
+    pub fn has_enchantments(&self) -> bool {
+        self.get_data_component::<EnchantmentsImpl>()
+            .is_some_and(|e| !e.enchantment.is_empty())
+    }
+
+    pub fn add_enchantment(&mut self, enchantment: &'static Enchantment, level: u16) {
+        if let Some(enchantments) = self.get_data_component_mut::<EnchantmentsImpl>() {
+            let mut new_vec = enchantments.enchantment.to_vec();
+            new_vec.push((enchantment, level as i32));
+            enchantments.enchantment = Cow::Owned(new_vec);
+        } else {
+            let enchantments = EnchantmentsImpl {
+                enchantment: Cow::Owned(vec![(enchantment, level as i32)]),
+            };
+            self.patch
+                .push((DataComponent::Enchantments, Some(Box::new(enchantments))));
+        }
     }
 
     pub const EMPTY: &'static Self = &Self {

@@ -264,7 +264,7 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
     /// Returns true if the interaction was handled.
     fn interact<'a>(
         &'a self,
-        _player: &'a Player,
+        _player: &'a Arc<Player>,
         _item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async { false })

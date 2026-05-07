@@ -44,12 +44,12 @@ impl ServerPlayerData {
     /// # Returns
     ///
     /// A Result indicating success or the error that occurred.
-    pub async fn handle_player_leave(&self, player: &Player) -> Result<(), PlayerDataError> {
+    pub async fn handle_player_leave(&self, player: &Arc<Player>) -> Result<(), PlayerDataError> {
         player
             .player_screen_handler
             .lock()
             .await
-            .on_closed(player)
+            .on_closed(player.as_ref())
             .await;
         player.on_handled_screen_closed().await;
 
