@@ -19,6 +19,7 @@ pub mod enchanting_table;
 pub mod furnace;
 pub mod grindstone;
 pub mod smoker;
+pub mod stonecutter;
 
 // Redstone & mechanisms
 pub mod command; // command block / redstone control

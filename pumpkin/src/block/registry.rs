@@ -171,6 +171,7 @@ use crate::block::blocks::lectern::LecternBlock;
 use crate::block::blocks::shulker_box::ShulkerBoxBlock;
 use crate::block::blocks::skull_block::SkullBlock;
 use crate::block::blocks::smoker::SmokerBlock;
+use crate::block::blocks::stonecutter::StonecutterBlock;
 
 #[must_use]
 #[expect(clippy::too_many_lines)]
@@ -222,6 +223,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(SlabBlock);
     manager.register(SlimeBlock);
     manager.register(StairBlock);
+    manager.register(StonecutterBlock);
     manager.register(ShortPlantBlock);
     manager.register(DryVegetationBlock);
     manager.register(LilyPadBlock);
