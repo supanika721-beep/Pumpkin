@@ -2,9 +2,18 @@ name: Build PumpkinMC for Android
 
 on:
   push:
-    branches: [ main, master, dev, android-build-workflow ]
+    branches:
+      - main
+      - master
+      - dev
+      - android-build-workflow
+
   pull_request:
-    branches: [ main, master, dev ]
+    branches:
+      - main
+      - master
+      - dev
+
   workflow_dispatch:
 
 env:
@@ -12,18 +21,22 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+
   build-arm64:
     name: Build PumpkinMC Android Binary (ARM64)
     runs-on: ubuntu-latest
-    
+
+    env:
+      TARGET: aarch64-linux-android
+      API_LEVEL: 21
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: aarch64-linux-android
 
       - name: Setup Android NDK
@@ -32,37 +45,43 @@ jobs:
           ndk-version: r27b
           add-to-path: true
 
-      - name: Configure Cargo for Android
+      - name: Show NDK info
+        run: |
+          echo "ANDROID_NDK=$ANDROID_NDK"
+          ls "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" | head
+
+      - name: Configure Cargo
         run: |
           mkdir -p ~/.cargo
-          cat >> ~/.cargo/config.toml << 'EOF'
+
+          cat > ~/.cargo/config.toml << EOF
           [target.aarch64-linux-android]
-          linker = "${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-clang"
-          ar = "${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar"
-          
+          linker = "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang"
+          ar = "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
           [build]
           target-dir = "target"
           EOF
 
-      - name: Create Android module
+          cat ~/.cargo/config.toml
+
+      - name: Patch Pumpkin for Android
         run: |
+
           mkdir -p pumpkin/src/android
+
           cat > pumpkin/src/android/mod.rs << 'EOF'
-          //! Android-specific configuration and utilities
-          
-          /// On Android, disable interactive console since there's no real terminal
+          //! Android-specific helpers
+
           #[cfg(target_os = "android")]
           pub const FORCE_DISABLE_TTY: bool = true;
-          
-          /// Android-specific config directory fallback
+
           pub fn get_config_dir() -> std::path::PathBuf {
-              // Should be passed from Java/Kotlin wrapper via environment variable
               std::env::var("PUMPKIN_CONFIG_DIR")
                   .unwrap_or_else(|_| "/data/data/com.example.pumpkinmc/files/config".to_string())
                   .into()
           }
-          
-          /// Get the server data directory
+
           pub fn get_data_dir() -> std::path::PathBuf {
               std::env::var("PUMPKIN_DATA_DIR")
                   .unwrap_or_else(|_| "/data/data/com.example.pumpkinmc/files".to_string())
@@ -70,67 +89,67 @@ jobs:
           }
           EOF
 
-      - name: Add Android module to lib.rs
-        run: |
-          # Add the android module declaration at the beginning of lib.rs
+          grep -q "pub mod android;" pumpkin/src/lib.rs || \
           sed -i '1i #[cfg(target_os = "android")]\npub mod android;' pumpkin/src/lib.rs
 
-      - name: Fix WASI compile error for Android
-        run: |
-          # Modify the WASI check to exclude Android
-          sed -i 's/#\[cfg(target_os = "wasi")\]/#[cfg(all(target_os = "wasi", not(target_os = "android")))]/g' pumpkin/src/main.rs
-
-      - name: Disable TTY mode on Android
+      - name: Disable TTY on Android
         run: |
           python3 << 'PYEOF'
           import re
-          
-          with open('pumpkin/src/lib.rs', 'r') as f:
+
+          path = "pumpkin/src/lib.rs"
+
+          with open(path, "r") as f:
               content = f.read()
-          
-          # Find the problematic line and replace it
-          old_pattern = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
-          new_text = r'''\1) = if cfg!(target_os = "android") {
-            \1    // Android doesn't have a real TTY, use simple stdout
-            \1    (Box::new(std::io::stdout()), None)
-            \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {
-            \1    // Standard TTY mode for other platforms'''
-          
-          content = re.sub(old_pattern, new_text, content)
-          
-          with open('pumpkin/src/lib.rs', 'w') as f:
-              f.write(content)
+
+          old = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
+
+          new = r'''\1) = if cfg!(target_os = "android") {
+          \1    (Box::new(std::io::stdout()), None)
+          \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {'''
+
+          content2 = re.sub(old, new, content)
+
+          if content != content2:
+              with open(path, "w") as f:
+                  f.write(content2)
+
+              print("TTY patch applied")
+          else:
+              print("TTY patch already applied or pattern not found")
           PYEOF
 
-      - name: Build PumpkinMC for Android ARM64
+      - name: Build Pumpkin ARM64
         run: |
-          # Set environment variables for cross-compilation
-          export CC_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
-          export AR_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-ar"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CC_aarch64_linux_android}"
-          
-          # Build in release mode with optimizations
-          cargo build --release --target aarch64-linux-android --verbose
-          
-          echo "✅ Build completed successfully!"
-          ls -lh target/aarch64-linux-android/release/pumpkin
 
-      - name: Strip debug symbols
-        run: |
-          ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android-strip target/aarch64-linux-android/release/pumpkin
-          echo "✅ Binary stripped successfully!"
-          ls -lh target/aarch64-linux-android/release/pumpkin
+          export CC_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API_LEVEL}-clang"
 
-      - name: Create release artifacts
+          export AR_aarch64_linux_android="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+
+          cargo build \
+            --release \
+            --target aarch64-linux-android \
+            --verbose
+
+      - name: Strip binary
         run: |
+          ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            target/aarch64-linux-android/release/pumpkin
+
+      - name: Prepare artifacts
+        run: |
+
           mkdir -p release_artifacts
-          
-          # Copy the binary
-          cp target/aarch64-linux-android/release/pumpkin release_artifacts/pumpkin-arm64
-          
-          # Create checksums
+
+          cp target/aarch64-linux-android/release/pumpkin \
+             release_artifacts/pumpkin-arm64
+
           cd release_artifacts
+
           sha256sum pumpkin-arm64 > SHA256SUMS
+
           ls -lah
 
       - name: Upload artifacts
@@ -140,31 +159,34 @@ jobs:
           path: release_artifacts/
           retention-days: 30
 
-      - name: Build Summary
+      - name: Build summary
         run: |
-          echo "## 🎯 Android ARM64 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Android ARM64 Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Target** | aarch64-linux-android |" >> $GITHUB_STEP_SUMMARY
-          echo "| **NDK Version** | r27b |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Build Type** | Release (Optimized) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Binary Name** | pumpkin-arm64 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **File Size** | $(du -h release_artifacts/pumpkin-arm64 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SHA256** | \`$(cat release_artifacts/SHA256SUMS | cut -d' ' -f1)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | aarch64-linux-android |" >> $GITHUB_STEP_SUMMARY
+          echo "| API Level | 21 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary Size | $(du -h release_artifacts/pumpkin-arm64 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA256 | \`$(cut -d' ' -f1 release_artifacts/SHA256SUMS)\` |" >> $GITHUB_STEP_SUMMARY
+
+
 
   build-arm32:
     name: Build PumpkinMC Android Binary (ARM32)
     runs-on: ubuntu-latest
-    
+
+    env:
+      TARGET: armv7-linux-androideabi
+      API_LEVEL: 21
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           targets: armv7-linux-androideabi
 
       - name: Setup Android NDK
@@ -173,33 +195,36 @@ jobs:
           ndk-version: r27b
           add-to-path: true
 
-      - name: Configure Cargo for Android ARM32
+      - name: Configure Cargo
         run: |
           mkdir -p ~/.cargo
-          cat >> ~/.cargo/config.toml << 'EOF'
+
+          cat > ~/.cargo/config.toml << EOF
           [target.armv7-linux-androideabi]
-          linker = "${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi-clang"
-          ar = "${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi-ar"
-          
+          linker = "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
+          ar = "${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
           [build]
           target-dir = "target"
           EOF
 
-      - name: Create Android module
+      - name: Patch Pumpkin for Android
         run: |
+
           mkdir -p pumpkin/src/android
+
           cat > pumpkin/src/android/mod.rs << 'EOF'
-          //! Android-specific configuration and utilities
-          
+          //! Android-specific helpers
+
           #[cfg(target_os = "android")]
           pub const FORCE_DISABLE_TTY: bool = true;
-          
+
           pub fn get_config_dir() -> std::path::PathBuf {
               std::env::var("PUMPKIN_CONFIG_DIR")
                   .unwrap_or_else(|_| "/data/data/com.example.pumpkinmc/files/config".to_string())
                   .into()
           }
-          
+
           pub fn get_data_dir() -> std::path::PathBuf {
               std::env::var("PUMPKIN_DATA_DIR")
                   .unwrap_or_else(|_| "/data/data/com.example.pumpkinmc/files".to_string())
@@ -207,72 +232,83 @@ jobs:
           }
           EOF
 
-      - name: Add Android module to lib.rs
-        run: |
+          grep -q "pub mod android;" pumpkin/src/lib.rs || \
           sed -i '1i #[cfg(target_os = "android")]\npub mod android;' pumpkin/src/lib.rs
 
-      - name: Fix WASI compile error for Android
-        run: |
-          sed -i 's/#\[cfg(target_os = "wasi")\]/#[cfg(all(target_os = "wasi", not(target_os = "android")))]/g' pumpkin/src/main.rs
-
-      - name: Disable TTY mode on Android
+      - name: Disable TTY on Android
         run: |
           python3 << 'PYEOF'
           import re
-          
-          with open('pumpkin/src/lib.rs', 'r') as f:
+
+          path = "pumpkin/src/lib.rs"
+
+          with open(path, "r") as f:
               content = f.read()
-          
-          old_pattern = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
-          new_text = r'''\1) = if cfg!(target_os = "android") {
-            \1    // Android doesn't have a real TTY, use simple stdout
-            \1    (Box::new(std::io::stdout()), None)
-            \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {
-            \1    // Standard TTY mode for other platforms'''
-          
-          content = re.sub(old_pattern, new_text, content)
-          
-          with open('pumpkin/src/lib.rs', 'w') as f:
-              f.write(content)
+
+          old = r'(\s+)\) = if advanced_config\.commands\.use_tty && stdin\(\)\.is_terminal\(\) \{'
+
+          new = r'''\1) = if cfg!(target_os = "android") {
+          \1    (Box::new(std::io::stdout()), None)
+          \1} else if advanced_config.commands.use_tty && stdin().is_terminal() {'''
+
+          content2 = re.sub(old, new, content)
+
+          if content != content2:
+              with open(path, "w") as f:
+                  f.write(content2)
+
+              print("TTY patch applied")
+          else:
+              print("TTY patch already applied or pattern not found")
           PYEOF
 
-      - name: Build PumpkinMC for Android ARM32
+      - name: Build Pumpkin ARM32
         run: |
-          export CC_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
-          export AR_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi-ar"
-          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="${CC_armv7_linux_androideabi}"
-          
-          cargo build --release --target armv7-linux-androideabi --verbose
-          
-          echo "✅ ARM32 Build completed!"
-          ls -lh target/armv7-linux-androideabi/release/pumpkin
 
-      - name: Strip and prepare ARM32
+          export CC_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${API_LEVEL}-clang"
+
+          export AR_armv7_linux_androideabi="${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER="$CC_armv7_linux_androideabi"
+
+          cargo build \
+            --release \
+            --target armv7-linux-androideabi \
+            --verbose
+
+      - name: Strip binary
         run: |
-          ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/arm-linux-androideabi-strip target/armv7-linux-androideabi/release/pumpkin
-          
+          ${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            target/armv7-linux-androideabi/release/pumpkin
+
+      - name: Prepare artifacts
+        run: |
+
           mkdir -p release_artifacts_arm32
-          cp target/armv7-linux-androideabi/release/pumpkin release_artifacts_arm32/pumpkin-arm32
+
+          cp target/armv7-linux-androideabi/release/pumpkin \
+             release_artifacts_arm32/pumpkin-arm32
+
           cd release_artifacts_arm32
+
           sha256sum pumpkin-arm32 > SHA256SUMS
+
           ls -lah
 
-      - name: Upload ARM32 artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: pumpkin-android-arm32
           path: release_artifacts_arm32/
           retention-days: 30
 
-      - name: Build Summary
+      - name: Build summary
         run: |
-          echo "## 🎯 Android ARM32 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## Android ARM32 Build" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Target** | armv7-linux-androideabi |" >> $GITHUB_STEP_SUMMARY
-          echo "| **NDK Version** | r27b |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Build Type** | Release (Optimized) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Binary Name** | pumpkin-arm32 |" >> $GITHUB_STEP_SUMMARY
-          echo "| **File Size** | $(du -h release_artifacts_arm32/pumpkin-arm32 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
-          echo "| **SHA256** | \`$(cat release_artifacts_arm32/SHA256SUMS | cut -d' ' -f1)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Target | armv7-linux-androideabi |" >> $GITHUB_STEP_SUMMARY
+          echo "| API Level | 21 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary Size | $(du -h release_artifacts_arm32/pumpkin-arm32 | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA256 | \`$(cut -d' ' -f1 release_artifacts_arm32/SHA256SUMS)\` |" >> $GITHUB_STEP_SUMMARY
