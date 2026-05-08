@@ -5,7 +5,6 @@ use pumpkin_data::block_state_remap::remap_block_state_for_version;
 use pumpkin_data::packet::CURRENT_MC_VERSION;
 use pumpkin_data::packet::clientbound::PLAY_LEVEL_CHUNK_WITH_LIGHT;
 use pumpkin_macros::java_packet;
-use pumpkin_nbt::END_ID;
 use pumpkin_util::math::position::get_local_cord;
 use pumpkin_util::version::MinecraftVersion;
 use pumpkin_world::chunk::format::LightContainer;
@@ -195,23 +194,26 @@ impl ClientPacket for CChunkData<'_> {
 
         let block_entities = self
             .0
-            .block_entities
+            .pending_block_entities
             .lock()
             .map_err(|_| WritingError::Message("block_entities lock poisoned".into()))?;
         write.write_var_int(&VarInt(block_entities.len() as i32))?;
-        for block_entity in block_entities.values() {
-            let pos = block_entity.get_position();
+        for (pos, nbt) in block_entities.iter() {
             let local_xz = ((get_local_cord(pos.0.x) & 0xF) << 4) | (get_local_cord(pos.0.z) & 0xF);
 
             write.write_u8(local_xz as u8)?;
             write.write_i16_be(pos.0.y as i16)?;
-            write.write_var_int(&VarInt(block_entity.get_id() as i32))?;
 
-            if let Some(nbt) = block_entity.chunk_data_nbt() {
-                write.write_nbt(nbt.into())?;
-            } else {
-                write.write_u8(END_ID)?;
-            }
+            let id = nbt.get_string("id").map_or(0, |id_str| {
+                let name = id_str.split(':').next_back().unwrap_or(id_str);
+                pumpkin_data::block_properties::BLOCK_ENTITY_TYPES
+                    .iter()
+                    .position(|&n| n == name)
+                    .unwrap_or(0)
+            });
+
+            write.write_var_int(&VarInt(id as i32))?;
+            write.write_nbt(nbt.clone().into())?;
         }
 
         {

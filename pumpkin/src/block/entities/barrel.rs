@@ -17,12 +17,14 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-use crate::block::viewer::{ViewerCountListener, ViewerCountTracker, ViewerFuture};
-use crate::inventory::InventoryFuture;
-use crate::inventory::{
+use crate::block::viewer::{
+    ViewerCountListener, ViewerCountTracker, ViewerCountTrackerExt, ViewerFuture,
+};
+use crate::world::{BlockFlags, World};
+use pumpkin_world::inventory::InventoryFuture;
+use pumpkin_world::inventory::{
     split_stack, {Clearable, Inventory},
 };
-use crate::world::{BlockFlags, SimpleWorld};
 
 use super::BlockEntity;
 
@@ -67,10 +69,7 @@ impl BlockEntity for BarrelBlockEntity {
         self.write_inventory_nbt(nbt, true)
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.viewers
                 .update_viewer_count::<Self>(self, world, &self.position)
@@ -98,7 +97,7 @@ impl BlockEntity for BarrelBlockEntity {
 impl ViewerCountListener for BarrelBlockEntity {
     fn on_container_open<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         _position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -109,7 +108,7 @@ impl ViewerCountListener for BarrelBlockEntity {
 
     fn on_container_close<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         _position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -133,7 +132,7 @@ impl BarrelBlockEntity {
         }
     }
 
-    async fn set_open(&self, world: &Arc<dyn SimpleWorld>, open: bool) {
+    async fn set_open(&self, world: &Arc<World>, open: bool) {
         let state = world.get_block_state(&self.position).await;
         let mut properties = BarrelLikeProperties::from_state_id(state.id, &Block::BARREL);
 
@@ -149,7 +148,7 @@ impl BarrelBlockEntity {
             .await;
     }
 
-    async fn play_sound(&self, world: &Arc<dyn SimpleWorld>, sound: Sound) {
+    async fn play_sound(&self, world: &Arc<World>, sound: Sound) {
         let mut rng = Xoroshiro::from_seed(get_seed());
 
         let state = world.get_block_state(&self.position).await;

@@ -7,8 +7,10 @@ use std::any::Any;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::block::viewer::{ViewerCountListener, ViewerCountTracker, ViewerFuture};
-use crate::world::SimpleWorld;
+use crate::block::viewer::{
+    ViewerCountListener, ViewerCountTracker, ViewerCountTrackerExt, ViewerFuture,
+};
+use crate::world::World;
 
 use super::BlockEntity;
 
@@ -45,10 +47,7 @@ impl BlockEntity for EnderChestBlockEntity {
         Box::pin(async {})
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.viewers
                 .update_viewer_count::<Self>(self, world, &self.position)
@@ -64,7 +63,7 @@ impl BlockEntity for EnderChestBlockEntity {
 impl ViewerCountListener for EnderChestBlockEntity {
     fn on_container_open<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         _position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -74,7 +73,7 @@ impl ViewerCountListener for EnderChestBlockEntity {
 
     fn on_container_close<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         _position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -84,7 +83,7 @@ impl ViewerCountListener for EnderChestBlockEntity {
 
     fn on_viewer_count_update<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         position: &'a BlockPos,
         _old: u16,
         new: u16,
@@ -114,7 +113,7 @@ impl EnderChestBlockEntity {
         self.viewers.clone()
     }
 
-    async fn play_sound(&self, world: &Arc<dyn SimpleWorld>, sound: Sound) {
+    async fn play_sound(&self, world: &Arc<World>, sound: Sound) {
         let mut rng = Xoroshiro::from_seed(get_seed());
 
         world

@@ -1,7 +1,6 @@
-use crate::BlockStateId;
 use crate::block::entities::BlockEntity;
-use crate::inventory::{Clearable, Inventory, InventoryFuture, split_stack};
-use crate::world::SimpleWorld;
+use crate::entity::experience_orb::ExperienceOrbEntity;
+use crate::world::World;
 use pumpkin_data::block_properties::{BlockProperties, FacingHopper, HopperLikeProperties};
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::tag::Taggable;
@@ -10,6 +9,8 @@ use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::tag::NbtTag;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_world::BlockStateId;
+use pumpkin_world::inventory::{Clearable, Inventory, InventoryFuture, split_stack};
 use std::any::Any;
 use std::array::from_fn;
 use std::pin::Pin;
@@ -71,10 +72,7 @@ impl BlockEntity for HopperBlockEntity {
         hopper
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.ticked_game_time
                 .store(world.get_world_age().await, Ordering::Relaxed);
@@ -134,12 +132,13 @@ impl HopperBlockEntity {
             ticked_game_time: AtomicI64::new(0),
         }
     }
-    async fn try_move_items(&self, state: &HopperLikeProperties, world: &Arc<dyn SimpleWorld>) {
+    async fn try_move_items(&self, state: &HopperLikeProperties, world: &Arc<World>) {
         if self.cooldown_time.load(Ordering::Relaxed) <= 0 && state.enabled {
-            let mut success = false;
-            if !self.is_empty().await {
-                success = self.eject_items(world).await;
-            }
+            let mut success = if self.is_empty().await {
+                false
+            } else {
+                self.eject_items(world).await
+            };
             if !self.inventory_full().await {
                 success |= self.suck_in_items(world).await;
             }
@@ -160,7 +159,7 @@ impl HopperBlockEntity {
         true
     }
 
-    async fn suck_in_items(&self, world: &Arc<dyn SimpleWorld>) -> bool {
+    async fn suck_in_items(&self, world: &Arc<World>) -> bool {
         // TODO getEntityContainer
         let pos_up = &self.position.up();
         if let Some(entity) = world.get_block_entity(pos_up).await
@@ -184,7 +183,7 @@ impl HopperBlockEntity {
                             let xp = experience_container.extract_experience();
                             if xp > 0 {
                                 let pos = self.position.to_f64();
-                                world.clone().spawn_experience_orbs(pos, xp as u32).await;
+                                ExperienceOrbEntity::spawn(world, pos, xp as u32).await;
                             }
                         }
                         return true;
@@ -202,7 +201,7 @@ impl HopperBlockEntity {
         false
     }
 
-    async fn eject_items(&self, world: &Arc<dyn SimpleWorld>) -> bool {
+    async fn eject_items(&self, world: &Arc<World>) -> bool {
         // TODO getEntityContainer
 
         if let Some(entity) = world

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::block::entities::bed::BedBlockEntity;
 use pumpkin_data::Block;
 use pumpkin_data::block_properties::BedPart;
 use pumpkin_data::block_properties::BlockProperties;
@@ -11,7 +12,6 @@ use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::BlockStateId;
-use pumpkin_world::block::entities::bed::BedBlockEntity;
 use pumpkin_world::world::BlockFlags;
 
 use crate::block::BlockFuture;

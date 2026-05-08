@@ -1,5 +1,5 @@
-use crate::inventory::Inventory;
-use pumpkin_data::block_properties::BlockProperties;
+use pumpkin_data::{block_properties::BlockProperties, item_stack::ItemStack};
+use pumpkin_world::inventory::Inventory;
 
 use std::{
     array::from_fn,
@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use pumpkin_data::{item_stack::ItemStack, recipes::CookingRecipeKind};
+use pumpkin_data::recipes::CookingRecipeKind;
 use pumpkin_util::math::position::BlockPos;
 use tokio::sync::Mutex;
 
@@ -21,7 +21,7 @@ use crate::{
     impl_property_delegate_for_cooking,
 };
 
-pub struct FurnaceBlockEntity {
+pub struct BlastingFurnaceBlockEntity {
     pub position: BlockPos,
     pub dirty: AtomicBool,
 
@@ -37,9 +37,9 @@ pub struct FurnaceBlockEntity {
     pub recipes_used: StdMutex<HashMap<String, u32>>,
 }
 
-impl FurnaceBlockEntity {
+impl BlastingFurnaceBlockEntity {
     pub const INVENTORY_SIZE: usize = 3;
-    pub const ID: &'static str = "minecraft:furnace";
+    pub const ID: &'static str = "minecraft:blast_furnace";
 
     #[must_use]
     pub fn new(position: BlockPos) -> Self {
@@ -56,9 +56,9 @@ impl FurnaceBlockEntity {
     }
 }
 
-impl_cooking_block_entity_base!(FurnaceBlockEntity);
-impl_block_entity_for_cooking!(FurnaceBlockEntity, CookingRecipeKind::Smelting);
-impl_inventory_for_cooking!(FurnaceBlockEntity);
-impl_clearable_for_cooking!(FurnaceBlockEntity);
-impl_property_delegate_for_cooking!(FurnaceBlockEntity);
-impl_experience_container_for_cooking!(FurnaceBlockEntity);
+impl_cooking_block_entity_base!(BlastingFurnaceBlockEntity);
+impl_block_entity_for_cooking!(BlastingFurnaceBlockEntity, CookingRecipeKind::Blasting);
+impl_inventory_for_cooking!(BlastingFurnaceBlockEntity);
+impl_clearable_for_cooking!(BlastingFurnaceBlockEntity);
+impl_property_delegate_for_cooking!(BlastingFurnaceBlockEntity);
+impl_experience_container_for_cooking!(BlastingFurnaceBlockEntity);

@@ -1,8 +1,8 @@
 use crate::block::blocks::anvil::AnvilBlock;
-
 use crate::block::blocks::banners::BannerBlock;
 use crate::block::blocks::barrel::BarrelBlock;
 use crate::block::blocks::barrier::BarrierBlock;
+use crate::block::blocks::beacon::BeaconBlock;
 use crate::block::blocks::bed::BedBlock;
 use crate::block::blocks::brewing_stand::BrewingStandBlock;
 use crate::block::blocks::cake::CakeBlock;
@@ -171,6 +171,7 @@ use crate::block::blocks::lectern::LecternBlock;
 use crate::block::blocks::shulker_box::ShulkerBoxBlock;
 use crate::block::blocks::skull_block::SkullBlock;
 use crate::block::blocks::smoker::SmokerBlock;
+use crate::block::blocks::stonecutter::StonecutterBlock;
 
 #[must_use]
 #[expect(clippy::too_many_lines)]
@@ -179,6 +180,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
 
     // Blocks
     manager.register(AnvilBlock);
+    manager.register(BeaconBlock);
     manager.register(BedBlock);
     manager.register(SaplingBlock);
     manager.register(CactusBlock);
@@ -221,6 +223,7 @@ pub fn default_registry() -> Arc<BlockRegistry> {
     manager.register(SlabBlock);
     manager.register(SlimeBlock);
     manager.register(StairBlock);
+    manager.register(StonecutterBlock);
     manager.register(ShortPlantBlock);
     manager.register(DryVegetationBlock);
     manager.register(LilyPadBlock);

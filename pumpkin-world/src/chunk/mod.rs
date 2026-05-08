@@ -1,5 +1,4 @@
 use crate::BlockStateId;
-use crate::block::entities::BlockEntity;
 use crate::chunk::format::LightContainer;
 use crate::tick::scheduler::ChunkTickScheduler;
 use palette::{BiomePalette, BlockPalette, has_random_ticking_fluid};
@@ -8,12 +7,13 @@ use pumpkin_data::chunk::ChunkStatus;
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::tag::Block::MINECRAFT_LEAVES;
 use pumpkin_data::{Block, BlockState};
+use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::nbt_long_array;
 use pumpkin_util::math::position::BlockPos;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::atomic::AtomicBool;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -76,7 +76,7 @@ pub struct ChunkData {
     pub z: i32,
     pub block_ticks: ChunkTickScheduler<&'static Block>,
     pub fluid_ticks: ChunkTickScheduler<&'static Fluid>,
-    pub block_entities: std::sync::Mutex<FxHashMap<BlockPos, Arc<dyn BlockEntity>>>,
+    pub pending_block_entities: std::sync::Mutex<FxHashMap<BlockPos, NbtCompound>>,
     pub light_engine: std::sync::Mutex<ChunkLight>,
     pub light_populated: AtomicBool,
     pub status: ChunkStatus,

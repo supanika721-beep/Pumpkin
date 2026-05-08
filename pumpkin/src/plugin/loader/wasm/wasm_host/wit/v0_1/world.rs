@@ -1,7 +1,7 @@
 use pumpkin_data::BlockDirection as InternalBlockDirection;
 use pumpkin_data::block_state::PistonBehavior;
 use pumpkin_util::math::position::BlockPos;
-use pumpkin_world::world::{BlockFlags, SimpleWorld};
+use pumpkin_world::world::BlockFlags;
 use std::sync::Arc;
 use wasmtime::component::Resource;
 

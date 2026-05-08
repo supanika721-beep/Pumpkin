@@ -18,7 +18,7 @@ macro_rules! impl_block_entity_for_chest {
             where
                 Self: Sized,
             {
-                use $crate::inventory::Inventory;
+                use pumpkin_world::inventory::Inventory;
 
                 let chest = Self {
                     position,
@@ -36,7 +36,7 @@ macro_rules! impl_block_entity_for_chest {
                 &'a self,
                 nbt: &'a mut pumpkin_nbt::compound::NbtCompound,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-                use $crate::inventory::Inventory;
+                use pumpkin_world::inventory::Inventory;
 
                 // Write inventory data to NBT
                 self.write_inventory_nbt(nbt, true)
@@ -44,16 +44,20 @@ macro_rules! impl_block_entity_for_chest {
 
             fn tick<'a>(
                 &'a self,
-                world: &'a Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<$crate::world::World>,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
                 Box::pin(async move {
-                    self.viewers
-                        .update_viewer_count::<Self>(self, world, &self.position)
-                        .await;
+                    $crate::block::viewer::ViewerCountTrackerExt::update_viewer_count::<$struct_name>(
+                        &self.viewers,
+                        self,
+                        world,
+                        &self.position,
+                    )
+                    .await;
                 })
             }
 
-            fn get_inventory(self: Arc<Self>) -> Option<Arc<dyn $crate::inventory::Inventory>> {
+            fn get_inventory(self: Arc<Self>) -> Option<Arc<dyn pumpkin_world::inventory::Inventory>> {
                 Some(self)
             }
 
@@ -77,12 +81,12 @@ macro_rules! impl_block_entity_for_chest {
 #[macro_export]
 macro_rules! impl_inventory_for_chest {
     ($struct_name:ty) => {
-        impl $crate::inventory::Inventory for $struct_name {
+        impl pumpkin_world::inventory::Inventory for $struct_name {
             fn size(&self) -> usize {
                 self.items.len()
             }
 
-            fn is_empty(&self) -> $crate::inventory::InventoryFuture<'_, bool> {
+            fn is_empty(&self) -> pumpkin_world::inventory::InventoryFuture<'_, bool> {
                 Box::pin(async move {
                     for slot in &self.items {
                         if !slot.lock().await.is_empty() {
@@ -97,14 +101,14 @@ macro_rules! impl_inventory_for_chest {
             fn get_stack(
                 &self,
                 slot: usize,
-            ) -> $crate::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
                 Box::pin(async move { self.items[slot].clone() })
             }
 
             fn remove_stack(
                 &self,
                 slot: usize,
-            ) -> $crate::inventory::InventoryFuture<'_, ItemStack> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
                 Box::pin(async move {
                     let mut removed = ItemStack::EMPTY.clone();
                     let mut guard = self.items[slot].lock().await;
@@ -118,9 +122,10 @@ macro_rules! impl_inventory_for_chest {
                 &self,
                 slot: usize,
                 amount: u8,
-            ) -> $crate::inventory::InventoryFuture<'_, ItemStack> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
                 Box::pin(async move {
-                    let res = $crate::inventory::split_stack(&self.items, slot, amount).await;
+                    let res =
+                        pumpkin_world::inventory::split_stack(&self.items, slot, amount).await;
                     self.mark_dirty();
                     res
                 })
@@ -130,20 +135,20 @@ macro_rules! impl_inventory_for_chest {
                 &self,
                 slot: usize,
                 stack: ItemStack,
-            ) -> $crate::inventory::InventoryFuture<'_, ()> {
+            ) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
                 Box::pin(async move {
                     *self.items[slot].lock().await = stack;
                     self.mark_dirty();
                 })
             }
 
-            fn on_open(&self) -> $crate::inventory::InventoryFuture<'_, ()> {
+            fn on_open(&self) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
                 Box::pin(async move {
                     self.viewers.open_container();
                 })
             }
 
-            fn on_close(&self) -> $crate::inventory::InventoryFuture<'_, ()> {
+            fn on_close(&self) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
                 Box::pin(async move {
                     self.viewers.close_container();
                 })
@@ -164,7 +169,7 @@ macro_rules! impl_inventory_for_chest {
 #[macro_export]
 macro_rules! impl_clearable_for_chest {
     ($struct_name:ty) => {
-        impl $crate::inventory::Clearable for $struct_name {
+        impl pumpkin_world::inventory::Clearable for $struct_name {
             fn clear(
                 &self,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
@@ -172,7 +177,7 @@ macro_rules! impl_clearable_for_chest {
                     for slot in &self.items {
                         *slot.lock().await = ItemStack::EMPTY.clone();
                     }
-                    <$struct_name as $crate::inventory::Inventory>::mark_dirty(self);
+                    <$struct_name as pumpkin_world::inventory::Inventory>::mark_dirty(self);
                 })
             }
         }
@@ -189,7 +194,7 @@ macro_rules! impl_viewer_count_listener_for_chest {
         impl $crate::block::viewer::ViewerCountListener for $struct_name {
             fn on_container_open<'a>(
                 &'a self,
-                world: &'a Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<$crate::world::World>,
                 _position: &'a pumpkin_util::math::position::BlockPos,
             ) -> $crate::block::viewer::ViewerFuture<'a, ()> {
                 Box::pin(async move {
@@ -200,7 +205,7 @@ macro_rules! impl_viewer_count_listener_for_chest {
 
             fn on_container_close<'a>(
                 &'a self,
-                world: &'a Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<$crate::world::World>,
                 _position: &'a pumpkin_util::math::position::BlockPos,
             ) -> $crate::block::viewer::ViewerFuture<'a, ()> {
                 Box::pin(async move {
@@ -211,7 +216,7 @@ macro_rules! impl_viewer_count_listener_for_chest {
 
             fn on_viewer_count_update<'a>(
                 &'a self,
-                world: &'a Arc<dyn $crate::world::SimpleWorld>,
+                world: &'a Arc<$crate::world::World>,
                 position: &'a pumpkin_util::math::position::BlockPos,
                 old: u16,
                 new: u16,
@@ -271,7 +276,7 @@ macro_rules! impl_chest_helper_methods {
 
             async fn play_sound(
                 &self,
-                world: &Arc<dyn $crate::world::SimpleWorld>,
+                world: &Arc<$crate::world::World>,
                 sound: pumpkin_data::sound::Sound,
             ) {
                 let mut rng = pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(

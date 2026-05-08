@@ -8,7 +8,6 @@ use std::sync::{
 };
 
 use crate::block::entities::PropertyDelegate;
-use crate::inventory::Inventory;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::data_component_impl::DataComponentImpl;
 use pumpkin_data::item::Item;
@@ -19,6 +18,7 @@ use pumpkin_data::tag::{self, Taggable};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_world::inventory::Inventory;
 use tokio::sync::Mutex;
 
 pub struct BrewingStandBlockEntity {
@@ -50,12 +50,11 @@ impl BrewingStandBlockEntity {
     }
 
     /// Check if the current ingredient matches the stored ingredient
-    async fn ingredient_matches(&self, ingredient: &ItemStack) -> bool {
-        if let Some(stored) = *self.ingredient_item.lock().unwrap() {
-            !ingredient.is_empty() && ingredient.get_item().id == stored.id
-        } else {
-            false
-        }
+    fn ingredient_matches(&self, ingredient: &ItemStack) -> bool {
+        self.ingredient_item
+            .lock()
+            .unwrap()
+            .is_some_and(|stored| !ingredient.is_empty() && ingredient.get_item().id == stored.id)
     }
 
     /// Check if any potion slot has a valid recipe with the ingredient
@@ -101,7 +100,7 @@ impl BrewingStandBlockEntity {
     }
 
     /// Perform brewing on all valid potion slots
-    async fn do_brew(&self, world: &Arc<dyn crate::world::SimpleWorld>, ingredient: &ItemStack) {
+    async fn do_brew(&self, world: &Arc<crate::world::World>, ingredient: &ItemStack) {
         let ingredient_id = ingredient.get_item().id;
 
         // Apply recipes to each slot
@@ -120,18 +119,19 @@ impl BrewingStandBlockEntity {
                 {
                     let new_item = recipe.to();
                     let potion_comp = slot.get_data_component::<pumpkin_data::data_component_impl::PotionContentsImpl>().cloned();
-                    let new_stack = if let Some(pc) = potion_comp {
-                        ItemStack::new_with_component(
-                            slot.item_count,
-                            new_item,
-                            vec![(
-                                pumpkin_data::data_component::DataComponent::PotionContents,
-                                Some(pc.to_dyn()),
-                            )],
-                        )
-                    } else {
-                        ItemStack::new(slot.item_count, new_item)
-                    };
+                    let new_stack = potion_comp.map_or_else(
+                        || ItemStack::new(slot.item_count, new_item),
+                        |pc| {
+                            ItemStack::new_with_component(
+                                slot.item_count,
+                                new_item,
+                                vec![(
+                                    pumpkin_data::data_component::DataComponent::PotionContents,
+                                    Some(pc.to_dyn()),
+                                )],
+                            )
+                        },
+                    );
                     new_stack_opt = Some(new_stack);
                     break;
                 }
@@ -203,12 +203,12 @@ impl BrewingStandBlockEntity {
     }
 }
 
-impl crate::inventory::Inventory for BrewingStandBlockEntity {
+impl pumpkin_world::inventory::Inventory for BrewingStandBlockEntity {
     fn size(&self) -> usize {
         Self::INVENTORY_SIZE
     }
 
-    fn is_empty(&self) -> crate::inventory::InventoryFuture<'_, bool> {
+    fn is_empty(&self) -> pumpkin_world::inventory::InventoryFuture<'_, bool> {
         Box::pin(async move {
             for slot in &self.items {
                 if !slot.lock().await.is_empty() {
@@ -222,11 +222,14 @@ impl crate::inventory::Inventory for BrewingStandBlockEntity {
     fn get_stack(
         &self,
         slot: usize,
-    ) -> crate::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
+    ) -> pumpkin_world::inventory::InventoryFuture<'_, Arc<Mutex<ItemStack>>> {
         Box::pin(async move { self.items[slot].clone() })
     }
 
-    fn remove_stack(&self, slot: usize) -> crate::inventory::InventoryFuture<'_, ItemStack> {
+    fn remove_stack(
+        &self,
+        slot: usize,
+    ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
         Box::pin(async move {
             let mut removed = ItemStack::EMPTY.clone();
             let mut guard = self.items[slot].lock().await;
@@ -239,7 +242,7 @@ impl crate::inventory::Inventory for BrewingStandBlockEntity {
         &self,
         slot: usize,
         amount: u8,
-    ) -> crate::inventory::InventoryFuture<'_, ItemStack> {
+    ) -> pumpkin_world::inventory::InventoryFuture<'_, ItemStack> {
         Box::pin(async move {
             let mut guard = self.items[slot].lock().await;
             let mut taken = ItemStack::EMPTY.clone();
@@ -258,18 +261,18 @@ impl crate::inventory::Inventory for BrewingStandBlockEntity {
         &self,
         slot: usize,
         stack: ItemStack,
-    ) -> crate::inventory::InventoryFuture<'_, ()> {
+    ) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
         Box::pin(async move {
             *self.items[slot].lock().await = stack;
             self.mark_dirty();
         })
     }
 
-    fn on_open(&self) -> crate::inventory::InventoryFuture<'_, ()> {
+    fn on_open(&self) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
         Box::pin(async move {})
     }
 
-    fn on_close(&self) -> crate::inventory::InventoryFuture<'_, ()> {
+    fn on_close(&self) -> pumpkin_world::inventory::InventoryFuture<'_, ()> {
         Box::pin(async move {})
     }
 
@@ -307,7 +310,7 @@ impl crate::inventory::Inventory for BrewingStandBlockEntity {
     }
 }
 
-impl crate::inventory::Clearable for BrewingStandBlockEntity {
+impl pumpkin_world::inventory::Clearable for BrewingStandBlockEntity {
     fn clear(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             for slot in &self.items {
@@ -368,15 +371,15 @@ impl crate::block::entities::BlockEntity for BrewingStandBlockEntity {
 
     fn write_nbt<'a>(
         &'a self,
-        _nbt: &'a mut NbtCompound,
+        nbt: &'a mut NbtCompound,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             // Persist brew state
-            _nbt.put_int("BrewTime", self.brew_time.load(Ordering::Relaxed));
-            _nbt.put_int("Fuel", self.fuel.load(Ordering::Relaxed));
+            nbt.put_int("BrewTime", self.brew_time.load(Ordering::Relaxed));
+            nbt.put_int("Fuel", self.fuel.load(Ordering::Relaxed));
 
             // Save inventory contents to NBT
-            self.write_inventory_nbt(_nbt, true).await;
+            self.write_inventory_nbt(nbt, true).await;
         })
     }
 
@@ -406,7 +409,7 @@ impl crate::block::entities::BlockEntity for BrewingStandBlockEntity {
 
     fn tick<'a>(
         &'a self,
-        world: &'a Arc<dyn crate::world::SimpleWorld>,
+        world: &'a Arc<crate::world::World>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             // Refill fuel counter from fuel item if needed
@@ -442,7 +445,7 @@ impl crate::block::entities::BlockEntity for BrewingStandBlockEntity {
                 if is_done_brewing && brewable {
                     // Brewing complete
                     self.do_brew(world, &ingredient).await;
-                } else if !brewable || !self.ingredient_matches(&ingredient).await {
+                } else if !brewable || !self.ingredient_matches(&ingredient) {
                     // Cancel brewing
                     self.brew_time.store(0, Ordering::Relaxed);
                     self.mark_dirty();

@@ -1,3 +1,5 @@
+use crate::block::entities::BlockEntity;
+use dashmap::DashMap;
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
 use std::pin::Pin;
@@ -18,9 +20,7 @@ pub mod time;
 use crate::block::RandomTickArgs;
 use crate::world::chunker::is_within_view_distance;
 use crate::world::{chunker::get_view_distance, loot::LootContextParameters};
-use crate::{
-    block::BlockEvent, entity::experience_orb::ExperienceOrbEntity, entity::item::ItemEntity,
-};
+use crate::{block::BlockEvent, entity::item::ItemEntity};
 use crate::{
     block::{
         self,
@@ -120,14 +120,13 @@ use pumpkin_util::{
     random::{RandomImpl, get_seed, xoroshiro128::Xoroshiro},
 };
 use pumpkin_world::inventory::Clearable;
-use pumpkin_world::world::{GetBlockError, WorldFuture};
+use pumpkin_world::world::GetBlockError;
 use pumpkin_world::{
-    BlockStateId, CURRENT_BEDROCK_MC_VERSION, biome, block::entities::BlockEntity,
-    chunk::io::Dirtiable, inventory::Inventory, world::SimpleWorld,
+    BlockStateId, CURRENT_BEDROCK_MC_VERSION, biome, chunk::io::Dirtiable, inventory::Inventory,
 };
 use pumpkin_world::{chunk::ChunkData, world::BlockAccessor};
 use pumpkin_world::{level::Level, tick::TickPriority};
-use pumpkin_world::{world::BlockFlags, world_info::LevelData};
+pub use pumpkin_world::{world::BlockFlags, world_info::LevelData};
 use rand::seq::SliceRandom;
 use rand::{RngExt, rng};
 use scoreboard::Scoreboard;
@@ -213,6 +212,7 @@ pub struct World {
     pub dragon_fight: Option<Mutex<dragon_fight::DragonFight>>,
     pub spawn_state: ArcSwap<SpawnState>,
     pub active_chunks: ArcSwap<FxHashSet<Vector2<i32>>>,
+    pub block_entities: DashMap<BlockPos, Arc<dyn BlockEntity>>,
 }
 
 impl PartialEq for World {
@@ -260,6 +260,7 @@ impl World {
             spawn_state: ArcSwap::new(Arc::new(SpawnState::empty())),
             active_chunks: ArcSwap::new(Arc::new(FxHashSet::default())),
             server,
+            block_entities: DashMap::new(),
         }
     }
 
@@ -777,6 +778,7 @@ impl World {
             .await;
     }
 
+    #[expect(clippy::too_many_lines)]
     pub async fn tick(self: &Arc<Self>, server: Arc<Server>) {
         let start = tokio::time::Instant::now();
 
@@ -853,6 +855,28 @@ impl World {
         }
         let entity_elapsed = entity_start.elapsed();
 
+        let block_entity_start = tokio::time::Instant::now();
+        let block_entities: Vec<Arc<dyn BlockEntity>> = self
+            .block_entities
+            .iter()
+            .map(|e| e.value().clone())
+            .collect();
+        let block_entity_count = block_entities.len();
+
+        let mut block_entity_tasks = tokio::task::JoinSet::new();
+        for block_entity in block_entities {
+            let world_clone = self.clone();
+            block_entity_tasks.spawn(async move {
+                block_entity.tick(&world_clone).await;
+            });
+        }
+        while let Some(res) = block_entity_tasks.join_next().await {
+            if let Err(e) = res {
+                error!("Block entity tick panicked: {:?}", e);
+            }
+        }
+        let block_entity_elapsed = block_entity_start.elapsed();
+
         //self.level.chunk_loading.lock().unwrap().send_change();
 
         // Tick the End dragon fight (only on THE_END worlds).
@@ -863,13 +887,15 @@ impl World {
         let total_elapsed = start.elapsed();
         if total_elapsed.as_millis() > 50 {
             debug!(
-                "Slow Tick [{}ms]: Chunks: {:?} | Players({}): {:?} | Entities({}): {:?}",
+                "Slow Tick [{}ms]: Chunks: {:?} | Players({}): {:?} | Entities({}): {:?} | Block Entities({}): {:?}",
                 total_elapsed.as_millis(),
                 chunk_elapsed,
                 player_count,
                 player_elapsed,
                 entity_count,
                 entity_elapsed,
+                block_entity_count,
+                block_entity_elapsed,
             );
         }
     }
@@ -974,7 +1000,6 @@ impl World {
         }
     }
 
-    #[expect(clippy::too_many_lines)]
     pub async fn tick_chunks(self: &Arc<Self>) {
         let active_chunks = self.active_chunks.load();
         let tick_data = self.level.get_tick_data(&active_chunks);
@@ -1030,16 +1055,6 @@ impl World {
                     .await;
             }
         }
-
-        let world_simple: Arc<dyn SimpleWorld> = self.clone();
-        let mut block_entity_tasks = JoinSet::new();
-        for block_entity in tick_data.block_entities {
-            let world_simple = world_simple.clone();
-            block_entity_tasks.spawn(async move {
-                block_entity.tick(&world_simple).await;
-            });
-        }
-        while block_entity_tasks.join_next().await.is_some() {}
 
         let spawn_state = self.spawn_state.load();
 
@@ -1484,6 +1499,14 @@ impl World {
         }
         // TODO this.level.canSpawnEntitiesInChunk(chunkPos)
         spawn_for_chunk(self, chunk_pos, chunk, spawn_state, spawn_list).await;
+    }
+
+    pub async fn get_world_age(&self) -> i64 {
+        self.level_time.lock().await.world_age
+    }
+
+    pub async fn get_time_of_day(&self) -> i64 {
+        self.level_time.lock().await.time_of_day
     }
 
     pub async fn set_time_of_day(&self, time: i64) {
@@ -3306,8 +3329,7 @@ impl World {
             && old_block.default_state.block_entity_type != u16::MAX
             && let Some(entity) = self.get_block_entity(position).await
         {
-            let world: Arc<dyn SimpleWorld> = self.clone();
-            entity.on_block_replaced(world, *position).await;
+            entity.on_block_replaced(self.clone(), *position).await;
             self.remove_block_entity(position).await;
         }
 
@@ -3843,6 +3865,32 @@ impl World {
         }
     }
 
+    pub async fn update_from_neighbor_shapes(
+        self: &Arc<Self>,
+        state_id: BlockStateId,
+        pos: &BlockPos,
+    ) -> BlockStateId {
+        let mut current_state_id = state_id;
+        let block = Block::from_state_id(state_id);
+        for direction in BlockDirection::all() {
+            let neighbor_pos = pos.offset(direction.to_offset());
+            let neighbor_state_id = self.get_block_state_id(&neighbor_pos).await;
+            current_state_id = self
+                .block_registry
+                .get_state_for_neighbor_update(
+                    self,
+                    block,
+                    current_state_id,
+                    pos,
+                    direction,
+                    &neighbor_pos,
+                    neighbor_state_id,
+                )
+                .await;
+        }
+        current_state_id
+    }
+
     pub async fn replace_with_state_for_neighbor_update(
         self: &Arc<Self>,
         block_pos: &BlockPos,
@@ -3882,12 +3930,11 @@ impl World {
         }
     }
 
+    #[expect(clippy::unused_async)]
     pub async fn get_block_entity(&self, block_pos: &BlockPos) -> Option<Arc<dyn BlockEntity>> {
-        self.level
-            .get_or_fetch_chunk(block_pos.chunk_position(), |chunk| {
-                chunk.block_entities.lock().unwrap().get(block_pos).cloned()
-            })
-            .await
+        self.block_entities
+            .get(block_pos)
+            .map(|e| e.value().clone())
     }
 
     pub async fn add_block_entity(&self, block_entity: Arc<dyn BlockEntity>) {
@@ -3909,32 +3956,22 @@ impl World {
             .await;
         }
 
+        self.block_entities.insert(block_pos, block_entity.clone());
         self.level
             .get_or_fetch_chunk(chunk_pos, |chunk| {
-                chunk
-                    .block_entities
-                    .lock()
-                    .unwrap()
-                    .insert(block_pos, block_entity.clone());
                 chunk.mark_dirty(true);
             })
             .await;
     }
 
     pub async fn remove_block_entity(&self, block_pos: &BlockPos) {
-        self.level
-            .get_or_fetch_chunk(block_pos.chunk_position(), |chunk| {
-                if chunk
-                    .block_entities
-                    .lock()
-                    .unwrap()
-                    .remove(block_pos)
-                    .is_some()
-                {
+        if self.block_entities.remove(block_pos).is_some() {
+            self.level
+                .get_or_fetch_chunk(block_pos.chunk_position(), |chunk| {
                     chunk.mark_dirty(true);
-                }
-            })
-            .await;
+                })
+                .await;
+        }
     }
 
     pub async fn update_block_entity(&self, block_entity: &Arc<dyn BlockEntity>) {
@@ -4234,178 +4271,6 @@ impl World {
         for recipient in bedrock_recipients {
             recipient.send_game_packet(be_packet).await;
         }
-    }
-}
-
-impl pumpkin_world::world::SimpleWorld for World {
-    fn set_block_state(
-        self: Arc<Self>,
-        position: &BlockPos,
-        block_state_id: BlockStateId,
-        flags: BlockFlags,
-    ) -> WorldFuture<'_, BlockStateId> {
-        Box::pin(async move { Self::set_block_state(&self, position, block_state_id, flags).await })
-    }
-
-    fn update_neighbor<'a>(
-        self: Arc<Self>,
-        neighbor_block_pos: &'a BlockPos,
-        source_block: &'a pumpkin_data::Block,
-    ) -> WorldFuture<'a, ()> {
-        Box::pin(async move {
-            Self::update_neighbor(&self, neighbor_block_pos, source_block).await;
-        })
-    }
-
-    fn update_neighbors(
-        self: Arc<Self>,
-        block_pos: &BlockPos,
-        except: Option<BlockDirection>,
-    ) -> WorldFuture<'_, ()> {
-        Box::pin(async move {
-            Self::update_neighbors(&self, block_pos, except).await;
-        })
-    }
-
-    fn is_space_empty(&self, bounding_box: BoundingBox) -> WorldFuture<'_, bool> {
-        Box::pin(async move { self.is_space_empty(bounding_box).await })
-    }
-
-    fn add_synced_block_event(&self, pos: BlockPos, r#type: u8, data: u8) -> WorldFuture<'_, ()> {
-        Box::pin(async move {
-            self.add_synced_block_event(pos, r#type, data).await;
-        })
-    }
-
-    fn sync_world_event(
-        &self,
-        world_event: WorldEvent,
-        position: BlockPos,
-        data: i32,
-    ) -> WorldFuture<'_, ()> {
-        Box::pin(async move {
-            self.sync_world_event(world_event, position, data).await;
-        })
-    }
-
-    fn spawn_from_type(
-        self: Arc<Self>,
-        entity_type: &'static EntityType,
-        position: Vector3<f64>,
-    ) -> WorldFuture<'static, ()> {
-        Box::pin(async move {
-            let mob = from_type(entity_type, position, &self, Uuid::new_v4()).await;
-            self.spawn_entity(mob).await;
-        })
-    }
-
-    fn remove_block_entity<'a>(&'a self, block_pos: &'a BlockPos) -> WorldFuture<'a, ()> {
-        Box::pin(async move {
-            self.remove_block_entity(block_pos).await;
-        })
-    }
-
-    fn get_block_entity<'a>(
-        &'a self,
-        block_pos: &'a BlockPos,
-    ) -> WorldFuture<'a, Option<Arc<dyn BlockEntity>>> {
-        Box::pin(async move { self.get_block_entity(block_pos).await })
-    }
-
-    fn get_world_age(&self) -> WorldFuture<'_, i64> {
-        Box::pin(async move {
-            // Note: MutexGuard must be released before returning the future's result.
-            let level_time_guard = self.level_time.lock().await;
-            level_time_guard.world_age
-        })
-    }
-
-    fn get_time_of_day(&self) -> WorldFuture<'_, i64> {
-        Box::pin(async move {
-            let level_time_guard = self.level_time.lock().await;
-            level_time_guard.query_daytime()
-        })
-    }
-
-    fn get_level(&self) -> WorldFuture<'_, &Arc<Level>> {
-        Box::pin(async move { &self.level })
-    }
-
-    fn get_dimension(&self) -> WorldFuture<'_, &Dimension> {
-        Box::pin(async move { &self.dimension })
-    }
-
-    fn play_sound<'a>(
-        &'a self,
-        sound: Sound,
-        category: SoundCategory,
-        position: &'a Vector3<f64>,
-    ) -> WorldFuture<'a, ()> {
-        Box::pin(async move {
-            self.play_sound(sound, category, position).await;
-        })
-    }
-
-    fn play_sound_fine<'a>(
-        &'a self,
-        sound: Sound,
-        category: SoundCategory,
-        position: &'a Vector3<f64>,
-        volume: f32,
-        pitch: f32,
-    ) -> WorldFuture<'a, ()> {
-        Box::pin(async move {
-            self.play_sound_fine(sound, category, position, volume, pitch)
-                .await;
-        })
-    }
-
-    fn scatter_inventory<'a>(
-        self: Arc<Self>,
-        position: &'a BlockPos,
-        inventory: &'a Arc<dyn Inventory>,
-    ) -> WorldFuture<'a, ()> {
-        Box::pin(async move {
-            Self::scatter_inventory(&self, position, inventory).await;
-        })
-    }
-
-    fn spawn_experience_orbs(
-        self: Arc<Self>,
-        position: Vector3<f64>,
-        amount: u32,
-    ) -> WorldFuture<'static, ()> {
-        Box::pin(async move {
-            ExperienceOrbEntity::spawn(&self, position, amount).await;
-        })
-    }
-
-    fn update_from_neighbor_shapes(
-        self: Arc<Self>,
-        block_state_id: BlockStateId,
-        position: &BlockPos,
-    ) -> WorldFuture<'_, BlockStateId> {
-        Box::pin(async move {
-            let block = Block::from_state_id(block_state_id);
-            let mut state_id = block_state_id;
-            for direction in BlockDirection::update_order() {
-                let neighbor_pos = position.offset(direction.to_offset());
-                let neighbor_state_id = self.get_block_state_id(&neighbor_pos).await;
-                state_id = self
-                    .block_registry
-                    .get_state_for_neighbor_update(
-                        &self,
-                        block,
-                        state_id,
-                        position,
-                        direction,
-                        &neighbor_pos,
-                        neighbor_state_id,
-                    )
-                    .await;
-            }
-            state_id
-        })
     }
 }
 

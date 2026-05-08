@@ -13,12 +13,14 @@ use std::{
 };
 use tokio::sync::Mutex;
 
-use crate::block::viewer::{ViewerCountListener, ViewerCountTracker, ViewerFuture};
-use crate::inventory::InventoryFuture;
-use crate::inventory::{
+use crate::block::viewer::{
+    ViewerCountListener, ViewerCountTracker, ViewerCountTrackerExt, ViewerFuture,
+};
+use crate::world::World;
+use pumpkin_world::inventory::InventoryFuture;
+use pumpkin_world::inventory::{
     split_stack, {Clearable, Inventory},
 };
-use crate::world::SimpleWorld;
 
 use super::BlockEntity;
 
@@ -63,10 +65,7 @@ impl BlockEntity for ShulkerBoxBlockEntity {
         self.write_inventory_nbt(nbt, true)
     }
 
-    fn tick<'a>(
-        &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn tick<'a>(&'a self, world: &'a Arc<World>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             self.viewers
                 .update_viewer_count::<Self>(self, world, &self.position)
@@ -76,7 +75,7 @@ impl BlockEntity for ShulkerBoxBlockEntity {
 
     fn on_block_replaced<'a>(
         self: Arc<Self>,
-        _world: Arc<dyn SimpleWorld>,
+        _world: Arc<World>,
         _position: BlockPos,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
     where
@@ -107,7 +106,7 @@ impl BlockEntity for ShulkerBoxBlockEntity {
 impl ViewerCountListener for ShulkerBoxBlockEntity {
     fn on_container_open<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -119,7 +118,7 @@ impl ViewerCountListener for ShulkerBoxBlockEntity {
 
     fn on_container_close<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         position: &'a BlockPos,
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
@@ -131,7 +130,7 @@ impl ViewerCountListener for ShulkerBoxBlockEntity {
 
     fn on_viewer_count_update<'a>(
         &'a self,
-        world: &'a Arc<dyn SimpleWorld>,
+        world: &'a Arc<World>,
         position: &'a BlockPos,
         _old: u16,
         new: u16,
@@ -159,7 +158,7 @@ impl ShulkerBoxBlockEntity {
         }
     }
 
-    async fn play_sound(&self, world: &Arc<dyn SimpleWorld>, position: &BlockPos, sound: Sound) {
+    async fn play_sound(&self, world: &Arc<World>, position: &BlockPos, sound: Sound) {
         let mut rng = Xoroshiro::from_seed(get_seed());
 
         world

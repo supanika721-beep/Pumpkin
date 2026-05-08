@@ -13,8 +13,10 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 pub mod blocks;
+pub mod entities;
 pub mod fluid;
 pub mod registry;
+pub mod viewer;
 
 use crate::block::registry::BlockActionResult;
 use crate::entity::EntityBase;
