@@ -1,11 +1,7 @@
-name: Build Pumpkin for Android
+name: Build Pumpkin Android
 
 on:
   workflow_dispatch:
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
   build:
@@ -18,65 +14,40 @@ jobs:
         include:
           - target: aarch64-linux-android
             arch: arm64-v8a
-            api: 28
-            clang: aarch64-linux-android28-clang
+            api: 21
 
           - target: armv7-linux-androideabi
             arch: armeabi-v7a
-            api: 28
-            clang: armv7a-linux-androideabi28-clang
+            api: 21
 
     steps:
-      - name: Checkout repository
+      # 1. Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Android NDK
-        id: ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26c
-          add-to-path: true
-
-      - name: Install Rust toolchain
+      # 2. Install Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ matrix.target }}-
+      # 3. Add Android target
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
 
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target/${{ matrix.target }}
-          key: cargo-target-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-target-${{ matrix.target }}-
-
-      - name: Generate Cargo config
+      # 4. Install Android NDK
+      - name: Install NDK
         run: |
-          TOOLCHAIN="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          sudo apt-get update
+          sudo apt-get install -y unzip wget
 
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q android-ndk-r26d-linux.zip
+
+      # 5. Configure Cargo
+      - name: Configure Cargo
+        run: |
           mkdir -p .cargo
 
           cat > .cargo/config.toml << EOF
-          [target.aarch64-linux-android]
-          linker = "${TOOLCHAIN}/aarch64-linux-android28-clang"
-          ar = "${TOOLCHAIN}/llvm-ar"
-
-          [target.armv7-linux-androideabi]
-          linker = "${TOOLCHAIN}/armv7a-linux-androideabi28-clang"
-          ar = "${TOOLCHAIN}/llvm-ar"
-
           [profile.release]
           opt-level = "s"
           lto = "thin"
@@ -87,86 +58,86 @@ jobs:
           incremental = false
           EOF
 
-          cat .cargo/config.toml
-
-      - name: Apply Android patches
+      # 6. Build
+      - name: Build
         run: |
-          if [ -f scripts/patch-android.sh ]; then
-            chmod +x scripts/patch-android.sh
-            NDK_PATH="${{ steps.ndk.outputs.ndk-path }}" ./scripts/patch-android.sh
+          export NDK=$PWD/android-ndk-r26d
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+
+          export TARGET=${{ matrix.target }}
+          export API=${{ matrix.api }}
+
+          if [ "$TARGET" = "aarch64-linux-android" ]; then
+            export CC=$TOOLCHAIN/bin/aarch64-linux-android${API}-clang
           else
-            echo "patch-android.sh tidak ditemukan"
-            exit 1
+            export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi${API}-clang
           fi
 
-      - name: Build Pumpkin
-        env:
-          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          export AR=$TOOLCHAIN/bin/llvm-ar
 
-          PKG_CONFIG_ALLOW_CROSS: "1"
-          PKG_CONFIG_PATH: ""
+          export PATH=$TOOLCHAIN/bin:$PATH
 
-          CC_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
-          AR_aarch64_linux_android: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          if [ "$TARGET" = "aarch64-linux-android" ]; then
+            export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC
+          else
+            export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$CC
+          fi
 
-          CC_armv7_linux_androideabi: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi28-clang
-          AR_armv7_linux_androideabi: ${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          export RUSTFLAGS="-C link-arg=-landroid -C link-arg=-llog"
 
-          RUSTFLAGS: ""
-
-        run: |
           cargo build \
             --release \
-            --target ${{ matrix.target }} \
+            --target $TARGET \
             --no-default-features
 
+      # 7. Show build result
+      - name: List build output
+        run: |
+          echo "=== BUILD RESULT ==="
+          ls -lh target/${{ matrix.target }}/release/
+
+      # 8. Strip binary
       - name: Strip binary
         run: |
-          STRIP="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-          BIN="target/${{ matrix.target }}/release/pumpkin"
+          export NDK=$PWD/android-ndk-r26d
+          export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
 
-          if [ -f "$BIN" ]; then
-            "$STRIP" --strip-all "$BIN"
+          STRIP=$TOOLCHAIN/bin/llvm-strip
 
-            echo "=== Binary Info ==="
-            ls -lah "$BIN"
-            file "$BIN"
-          else
-            echo "Binary tidak ditemukan!"
-            ls -lah target/${{ matrix.target }}/release/ || true
-            exit 1
-          fi
+          BIN=$(find target/${{ matrix.target }}/release/ \
+            -maxdepth 1 \
+            -type f \
+            -executable \
+            ! -name "*.so" \
+            ! -name "*.rlib" \
+            | head -n 1)
 
-      - name: Upload artifact
+          echo "Binary: $BIN"
+
+          $STRIP --strip-all "$BIN"
+
+          ls -lh "$BIN"
+          file "$BIN"
+
+      # 9. Find binary
+      - name: Find binary
+        id: find_bin
+        run: |
+          BIN=$(find target/${{ matrix.target }}/release/ \
+            -maxdepth 1 \
+            -type f \
+            -executable \
+            ! -name "*.so" \
+            ! -name "*.rlib" \
+            | head -n 1)
+
+          echo "Found binary: $BIN"
+
+          echo "bin=$BIN" >> $GITHUB_OUTPUT
+
+      # 10. Upload binary
+      - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: pumpkin-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/pumpkin
-          if-no-files-found: error
-
-  verify:
-    name: Verify binaries
-    runs-on: ubuntu-latest
-    needs: build
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-          pattern: pumpkin-*
-
-      - name: Verify ELF files
-        run: |
-          find ./artifacts -type f | while read f; do
-            echo "========================"
-            echo "FILE: $f"
-            echo "========================"
-
-            file "$f"
-
-            if file "$f" | grep -q ELF; then
-              echo "--- Dynamic Dependencies ---"
-              readelf -d "$f" | grep NEEDED || true
-            fi
-          done
+          path: ${{ steps.find_bin.outputs.bin }}
