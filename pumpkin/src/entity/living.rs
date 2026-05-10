@@ -35,11 +35,11 @@ use pumpkin_data::attributes::Attributes;
 use pumpkin_data::damage::DeathMessageType;
 use pumpkin_data::data_component_impl::Operation;
 use pumpkin_data::data_component_impl::{
-    DeathProtectionImpl, EquipmentSlot, EquippableImpl, FoodImpl,
+    BlocksAttacksImpl, DeathProtectionImpl, EquipmentSlot, EquippableImpl, FoodImpl,
 };
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
-use pumpkin_data::item_stack::ItemStack;
+use pumpkin_data::item_stack::{DamageResult, ItemStack};
 use pumpkin_data::sound::SoundCategory;
 use pumpkin_data::{Block, translation};
 use pumpkin_data::{damage::DamageType, sound::Sound};
@@ -250,6 +250,17 @@ impl LivingEntity {
         self.item_use_time.store(0, Ordering::Relaxed);
 
         self.set_living_flag(Self::USING_ITEM_FLAG, false).await;
+    }
+
+    pub async fn is_blocking(&self) -> bool {
+        let item_in_use = self.item_in_use.lock().await;
+        if let Some(item) = item_in_use.as_ref()
+            && item.get_data_component::<BlocksAttacksImpl>().is_some()
+        {
+            let use_time = self.item_use_time.load(Ordering::Relaxed);
+            return item.get_max_use_time() - use_time >= 5;
+        }
+        false
     }
 
     pub async fn heal(&self, additional_health: f32) {
@@ -1928,6 +1939,56 @@ impl EntityBase for LivingEntity {
 
             // Total damage after reductions
             let effective_amount = amount * (1.0 - resistance_reduction);
+
+            // Check for shield blocking
+            if self.is_blocking().await
+                && !damage_type.has_tag(&tag::DamageType::MINECRAFT_BYPASSES_SHIELD)
+                && let Some(pos) = position
+            {
+                let player_pos = self.entity.pos.load();
+                let look_vec = Vector3::rotation_vector(0.0, self.entity.yaw.load() as f64);
+                let mut source_to_player = (player_pos - pos).normalize();
+                source_to_player.y = 0.0;
+
+                if source_to_player.dot(&look_vec) < 0.0 {
+                    world
+                        .play_sound(Sound::ItemShieldBlock, SoundCategory::Players, &player_pos)
+                        .await;
+
+                    let active_hand = self.active_hand.lock().await;
+                    if let Some(hand) = *active_hand {
+                        let slot = if hand == Hand::Left {
+                            EquipmentSlot::MAIN_HAND
+                        } else {
+                            EquipmentSlot::OFF_HAND
+                        };
+
+                        let equipment_lock = self.entity_equipment.lock().await;
+                        let stack_arc = equipment_lock.get(&slot);
+                        let mut stack = stack_arc.lock().await;
+
+                        let durability_damage = (amount / 1.0).floor().max(1.0) as i32;
+                        if stack.damage_item(durability_damage) == DamageResult::Broken {
+                            world
+                                .send_entity_status(
+                                    &self.entity,
+                                    crate::entity::equipment_break_status(&slot),
+                                )
+                                .await;
+                            *stack = ItemStack::EMPTY.clone();
+                            let broken_stack = stack.clone();
+                            drop(stack);
+                            drop(stack_arc);
+                            drop(equipment_lock);
+
+                            self.send_equipment_changes(&[(slot, broken_stack)]).await;
+                            self.clear_active_hand().await;
+                        }
+                    }
+
+                    return false;
+                }
+            }
 
             // Apply hurt cooldown logic
             let last_damage = self.last_damage_taken.load();

@@ -818,6 +818,7 @@ impl Player {
         //self.world().level.list_cached();
     }
 
+    #[expect(clippy::too_many_lines)]
     pub async fn attack(&self, victim: Arc<dyn EntityBase>) {
         let world = self.world();
         let server = world.server.upgrade().unwrap();
@@ -879,11 +880,21 @@ impl Player {
             damage *= 1.5;
         }
 
+        let is_mace_smash = matches!(attack_type, AttackType::MaceSmash);
+        if is_mace_smash {
+            let fall_distance = self.living_entity.fall_distance.load();
+            damage += 1.5 * f64::from(fall_distance);
+        }
+
         if !victim
             .damage_with_context(
                 &*victim,
                 damage as f32,
-                DamageType::PLAYER_ATTACK,
+                if is_mace_smash {
+                    DamageType::MACE_SMASH
+                } else {
+                    DamageType::PLAYER_ATTACK
+                },
                 None,
                 Some(self),
                 Some(self),
@@ -898,6 +909,22 @@ impl Player {
                 )
                 .await;
             return;
+        }
+
+        if is_mace_smash {
+            let fall_distance = self.living_entity.fall_distance.load();
+            self.living_entity.fall_distance.store(0.0);
+            world
+                .play_sound(
+                    if fall_distance > 5.0 {
+                        Sound::ItemMaceSmashGroundHeavy
+                    } else {
+                        Sound::ItemMaceSmashGround
+                    },
+                    SoundCategory::Players,
+                    &pos,
+                )
+                .await;
         }
 
         player_attack_sound(&pos, &world, attack_type).await;
