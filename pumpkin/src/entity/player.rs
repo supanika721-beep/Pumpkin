@@ -35,7 +35,7 @@ use uuid::Uuid;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::block_properties::{BlockProperties, HorizontalFacing};
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::data_component_impl::{AttributeModifiersImpl, Operation};
+use pumpkin_data::data_component_impl::{AttributeModifiersImpl, EnchantmentsImpl, Operation};
 use pumpkin_data::data_component_impl::{EquipmentSlot, EquippableImpl, ToolImpl, WeaponImpl};
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
@@ -53,7 +53,8 @@ use pumpkin_inventory::screen_handler::{
 };
 use pumpkin_inventory::sync_handler::SyncHandler;
 use pumpkin_macros::send_cancellable;
-use pumpkin_nbt::pnbt::PNbtCompound;
+use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_nbt::tag::NbtTag;
 use pumpkin_protocol::IdOr;
 use pumpkin_protocol::SoundEvent;
 use pumpkin_protocol::codec::var_int::VarInt;
@@ -61,12 +62,12 @@ use pumpkin_protocol::java::client::play::{
     Animation, CAcknowledgeBlockChange, CActionBar, CChangeDifficulty, CChunkBatchEnd,
     CChunkBatchStart, CChunkData, CCloseContainer, CCombatDeath, CCustomPayload,
     CDisguisedChatMessage, CEntityAnimation, CEntityPositionSync, CGameEvent, CItemCooldown,
-    CKeepAlive, COpenScreen, CParticle, CPlayerAbilities, CPlayerInfoUpdate, CPlayerPosition,
-    CPlayerSpawnPosition, CRespawn, CSetContainerContent, CSetContainerProperty, CSetContainerSlot,
-    CSetCursorItem, CSetEquipment, CSetExperience, CSetHealth, CSetPlayerInventory,
-    CSetSelectedSlot, CSoundEffect, CStopSound, CSubtitle, CSystemChatMessage, CTabList,
-    CTitleAnimation, CTitleText, CUnloadChunk, CUpdateMobEffect, CUpdateTime, GameEvent, Metadata,
-    PlayerAction, PlayerInfoFlags, PreviousMessage,
+    CKeepAlive, CMapItemData, COpenScreen, CParticle, CPlayerAbilities, CPlayerInfoUpdate,
+    CPlayerPosition, CPlayerSpawnPosition, CRespawn, CSetContainerContent, CSetContainerProperty,
+    CSetContainerSlot, CSetCursorItem, CSetEquipment, CSetExperience, CSetHealth,
+    CSetPlayerInventory, CSetSelectedSlot, CSoundEffect, CStopSound, CSubtitle, CSystemChatMessage,
+    CTabList, CTitleAnimation, CTitleText, CUnloadChunk, CUpdateMobEffect, CUpdateTime, GameEvent,
+    MapIcon, MapPatch, Metadata, PlayerAction, PlayerInfoFlags, PreviousMessage,
 };
 use pumpkin_protocol::java::server::play::{
     SClickSlot, SContainerButtonClick, SRenameItem, SlotActionType,
@@ -410,7 +411,7 @@ pub struct Player {
     /// The player's previous gamemode
     pub previous_gamemode: AtomicCell<Option<GameMode>>,
     /// The player's spawnpoint
-    pub respawn_point: AtomicCell<Option<RespawnPoint>>,
+    pub respawn_point: Mutex<Option<RespawnPoint>>,
     /// The player's sleep status
     pub sleeping_since: AtomicCell<Option<u8>>,
     /// Manages the player's breath level
@@ -496,6 +497,7 @@ pub struct Player {
     pub tab_list_latency: AtomicI32,
     pub tab_list_listed: AtomicBool,
     pub enchantment_seed: AtomicI32,
+    pub fishing_bobber: AtomicI32,
 }
 
 impl Player {
@@ -566,7 +568,7 @@ impl Player {
             gamemode: AtomicCell::new(gamemode),
             previous_gamemode: AtomicCell::new(None),
             // TODO: Send the CPlayerSpawnPosition packet when the client connects with proper values
-            respawn_point: AtomicCell::new(None),
+            respawn_point: Mutex::new(None),
             sleeping_since: AtomicCell::new(None),
             // We want this to be an impossible watched section so that `chunker::update_position`
             // will mark chunks as watched for a new join rather than a respawn.
@@ -632,6 +634,7 @@ impl Player {
             tab_list_order: AtomicI32::new(0),
             tab_list_latency: AtomicI32::new(0),
             tab_list_listed: AtomicBool::new(false),
+            fishing_bobber: AtomicI32::new(-1),
         }
     }
 
@@ -817,6 +820,7 @@ impl Player {
         //self.world().level.list_cached();
     }
 
+    #[expect(clippy::too_many_lines)]
     pub async fn attack(&self, victim: Arc<dyn EntityBase>) {
         let world = self.world();
         let server = world.server.upgrade().unwrap();
@@ -871,6 +875,23 @@ impl Player {
 
         // Modify the added damage based on the multiplier.
         let mut damage = base_damage + add_damage * damage_multiplier;
+
+        if let Some(strength) = self
+            .living_entity
+            .get_effect(&pumpkin_data::effect::StatusEffect::STRENGTH)
+            .await
+        {
+            damage += 3.0 * (f64::from(strength.amplifier) + 1.0);
+        }
+        if let Some(weakness) = self
+            .living_entity
+            .get_effect(&pumpkin_data::effect::StatusEffect::WEAKNESS)
+            .await
+        {
+            damage -= 4.0 * (f64::from(weakness.amplifier) + 1.0);
+        }
+        damage = damage.max(0.0);
+
         let pos = victim_entity.pos.load();
         let attack_type = AttackType::new(self, attack_cooldown_progress as f32).await;
 
@@ -878,11 +899,21 @@ impl Player {
             damage *= 1.5;
         }
 
+        let is_mace_smash = matches!(attack_type, AttackType::MaceSmash);
+        if is_mace_smash {
+            let fall_distance = self.living_entity.fall_distance.load();
+            damage += 1.5 * f64::from(fall_distance);
+        }
+
         if !victim
             .damage_with_context(
                 &*victim,
                 damage as f32,
-                DamageType::PLAYER_ATTACK,
+                if is_mace_smash {
+                    DamageType::MACE_SMASH
+                } else {
+                    DamageType::PLAYER_ATTACK
+                },
                 None,
                 Some(self),
                 Some(self),
@@ -897,6 +928,34 @@ impl Player {
                 )
                 .await;
             return;
+        }
+
+        if let Some(enchantments) = item_stack
+            .lock()
+            .await
+            .get_data_component::<EnchantmentsImpl>()
+        {
+            for (enchantment, level) in enchantments.enchantment.iter() {
+                if **enchantment == Enchantment::FIRE_ASPECT {
+                    victim_entity.set_on_fire_for_ticks(*level as u32 * 80);
+                }
+            }
+        }
+
+        if is_mace_smash {
+            let fall_distance = self.living_entity.fall_distance.load();
+            self.living_entity.fall_distance.store(0.0);
+            world
+                .play_sound(
+                    if fall_distance > 5.0 {
+                        Sound::ItemMaceSmashGroundHeavy
+                    } else {
+                        Sound::ItemMaceSmashGround
+                    },
+                    SoundCategory::Players,
+                    &pos,
+                )
+                .await;
         }
 
         player_attack_sound(&pos, &world, attack_type).await;
@@ -919,6 +978,42 @@ impl Player {
                 AttackType::Knockback => knockback_strength += 1.0,
                 AttackType::Sweeping => {
                     combat::spawn_sweep_particle(attacker_entity, &world, &pos).await;
+
+                    let mut sweep_damage = 1.0;
+                    if let Some(enchantments) = item_stack
+                        .lock()
+                        .await
+                        .get_data_component::<EnchantmentsImpl>()
+                    {
+                        for (enchantment, level) in enchantments.enchantment.iter() {
+                            if **enchantment == Enchantment::SWEEPING_EDGE {
+                                sweep_damage +=
+                                    damage as f32 * (*level as f32 / (*level as f32 + 1.0));
+                            }
+                        }
+                    }
+
+                    let search_box = BoundingBox::new(
+                        Vector3::new(pos.x - 1.0, pos.y - 0.5, pos.z - 1.0),
+                        Vector3::new(pos.x + 1.0, pos.y + 0.5, pos.z + 1.0),
+                    );
+                    let victims = world.get_all_at_box(&search_box);
+                    for other_victim in victims {
+                        if other_victim.get_entity().entity_id != victim_entity.entity_id
+                            && other_victim.get_entity().entity_id != attacker_entity.entity_id
+                        {
+                            other_victim
+                                .damage_with_context(
+                                    other_victim.as_ref(),
+                                    sweep_damage,
+                                    DamageType::PLAYER_ATTACK,
+                                    None,
+                                    Some(self),
+                                    Some(self),
+                                )
+                                .await;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -1072,21 +1167,16 @@ impl Player {
         block_pos: BlockPos,
         yaw: f32,
         pitch: f32,
+        forced: bool,
     ) -> bool {
-        if let Some(respawn_point) = self.respawn_point.load()
+        if !forced
+            && let Some(respawn_point) = self.respawn_point.lock().await.as_ref()
             && dimension == respawn_point.dimension
             && block_pos == respawn_point.position
         {
             return false;
         }
 
-        self.respawn_point.store(Some(RespawnPoint {
-            dimension,
-            position: block_pos,
-            yaw,
-            force: false,
-        }));
-
         self.client
             .send_packet_now(&CPlayerSpawnPosition::new(
                 block_pos,
@@ -1095,33 +1185,14 @@ impl Player {
                 dimension.minecraft_name.to_owned(),
             ))
             .await;
+
+        *self.respawn_point.lock().await = Some(RespawnPoint {
+            dimension,
+            position: block_pos,
+            yaw,
+            force: forced,
+        });
         true
-    }
-
-    /// Sets the respawn point with force=true, bypassing bed/anchor checks.
-    /// Used by /spawnpoint command.
-    pub async fn set_respawn_point_forced(
-        &self,
-        dimension: Dimension,
-        block_pos: BlockPos,
-        yaw: f32,
-        pitch: f32,
-    ) {
-        self.respawn_point.store(Some(RespawnPoint {
-            dimension,
-            position: block_pos,
-            yaw,
-            force: true,
-        }));
-
-        self.client
-            .send_packet_now(&CPlayerSpawnPosition::new(
-                block_pos,
-                yaw,
-                pitch,
-                dimension.minecraft_name.to_owned(),
-            ))
-            .await;
     }
 
     /// Calculates the player's respawn point based on stored spawn data.
@@ -1143,7 +1214,8 @@ impl Player {
         type BedProperties = pumpkin_data::block_properties::WhiteBedLikeProperties;
         type AnchorProperties = pumpkin_data::block_properties::RespawnAnchorLikeProperties;
 
-        let respawn_point = self.respawn_point.load()?;
+        let respawn_guard = self.respawn_point.lock().await;
+        let respawn_point = respawn_guard.as_ref()?;
         let world = self.world();
         let pos = &respawn_point.position;
         let (block, state_id) = world.get_block_and_state_id(pos).await;
@@ -1172,7 +1244,7 @@ impl Player {
                     position,
                     yaw: respawn_point.yaw,
                     pitch: 0.0,
-                    dimension: respawn_point.dimension,
+                    dimension: respawn_point.dimension.clone(),
                 });
             }
             return None;
@@ -1192,7 +1264,7 @@ impl Player {
                     position: spawn_pos,
                     yaw: respawn_point.yaw,
                     pitch: 0.0,
-                    dimension: respawn_point.dimension,
+                    dimension: respawn_point.dimension.clone(),
                 });
             }
             return None;
@@ -1226,7 +1298,7 @@ impl Player {
                     position: spawn_pos,
                     yaw: respawn_point.yaw,
                     pitch: 0.0,
-                    dimension: respawn_point.dimension,
+                    dimension: respawn_point.dimension.clone(),
                 });
             }
             return None;
@@ -1512,10 +1584,11 @@ impl Player {
 
     pub async fn wake_up(&self) {
         let world = self.world();
-        let respawn_point = self
-            .respawn_point
-            .load()
-            .expect("Player waking up should have it's respawn point set on the bed.");
+        let respawn_point = self.respawn_point.lock().await;
+        let Some(respawn_point) = respawn_point.as_ref() else {
+            warn!("Player waking up should have it's respawn point set on the bed");
+            return;
+        };
 
         let (bed, bed_state) = world.get_block_and_state_id(&respawn_point.position).await;
         BedBlock::set_occupied(false, &world, bed, &respawn_point.position, bed_state).await;
@@ -1803,6 +1876,7 @@ impl Player {
         // experience handling
         self.tick_experience().await;
         self.tick_health().await;
+        self.tick_maps(server).await;
 
         // Timeout/keep alive handling
         self.tick_client_load_timeout();
@@ -2825,6 +2899,68 @@ impl Player {
         }
     }
 
+    pub async fn tick_maps(&self, server: &Server) {
+        use pumpkin_data::data_component_impl::MapIdImpl;
+        use pumpkin_data::item::Item;
+
+        for hand in Hand::all() {
+            let item_in_hand = self.inventory.get_stack_in_hand(hand).await;
+
+            let stack = item_in_hand.lock().await;
+            if stack.item.id == Item::FILLED_MAP.id
+                && let Some(map_id_comp) = stack.get_data_component::<MapIdImpl>()
+            {
+                let map_id = map_id_comp.id;
+                if let Some(map_data_arc) = server.map_manager.get_map(map_id) {
+                    let mut map_data = map_data_arc.lock().await;
+                    map_data.update(self).await;
+
+                    let tick_count = self.tick_counter.load(Ordering::Relaxed);
+                    if map_data.dirty || tick_count % 10 == 0 {
+                        let scale = 1 << map_data.scale;
+                        let pos = self.position();
+                        let dx = pos.x - map_data.center_x as f64;
+                        let dz = pos.z - map_data.center_z as f64;
+
+                        let icon_x = (dx / scale as f64 * 2.0).clamp(-128.0, 127.0) as i8;
+                        let icon_z = (dz / scale as f64 * 2.0).clamp(-128.0, 127.0) as i8;
+
+                        let yaw = self.living_entity.entity.yaw.load();
+                        let icon_direction =
+                            ((((yaw * 16.0 / 360.0).round() as i32 + 8) % 16 + 16) % 16) as i8;
+
+                        let icons = [MapIcon {
+                            icon_type: VarInt(0), // White pointer
+                            x: icon_x,
+                            z: icon_z,
+                            direction: icon_direction,
+                            display_name: None,
+                        }];
+
+                        let data = map_data.dirty.then(|| MapPatch {
+                            columns: 128,
+                            rows: 128,
+                            x: 0,
+                            z: 0,
+                            data: &*map_data.colors,
+                        });
+
+                        self.client
+                            .enqueue_packet(&CMapItemData {
+                                map_id: VarInt(map_id),
+                                scale: map_data.scale,
+                                locked: map_data.locked,
+                                icons: Some(&icons),
+                                data,
+                            })
+                            .await;
+                        map_data.dirty = false;
+                    }
+                }
+            }
+        }
+    }
+
     /// Sets the player's experience level and notifies the client.
     pub async fn set_experience(&self, level: i32, progress: f32, points: i32) {
         // TODO: These should be atomic together, not isolated; make a struct containing these. can cause ABA issues
@@ -3655,10 +3791,9 @@ impl PartialEq for Player {
 }
 
 impl NBTStorage for Player {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async move {
-            nbt.put_int(DATA_VERSION);
-            nbt.put_string(self.world().dimension.minecraft_name);
+            nbt.put_int("DataVersion", DATA_VERSION);
             self.living_entity.write_nbt(nbt).await;
             self.inventory.write_nbt(nbt).await;
             self.ender_chest_inventory.write_nbt(nbt).await;
@@ -3668,44 +3803,48 @@ impl NBTStorage for Player {
             let total_exp =
                 experience::points_to_level(self.experience_level.load(Ordering::Relaxed))
                     + self.experience_points.load(Ordering::Relaxed);
-            nbt.put_int(total_exp);
-
-            nbt.put_byte(self.gamemode.load() as i8);
+            nbt.put_int("XpTotal", total_exp);
+            nbt.put_byte("playerGameType", self.gamemode.load() as i8);
             if let Some(previous_gamemode) = self.previous_gamemode.load() {
-                nbt.put_bool(true);
-                nbt.put_byte(previous_gamemode as i8);
-            } else {
-                nbt.put_bool(false);
+                nbt.put_byte("previousPlayerGameType", previous_gamemode as i8);
             }
 
-            nbt.put_bool(self.has_played_before.load(Ordering::Relaxed));
+            nbt.put_bool(
+                "HasPlayedBefore",
+                self.has_played_before.load(Ordering::Relaxed),
+            );
+
+            // Store food level, saturation, exhaustion, and tick timer
             self.hunger_manager.write_nbt(nbt).await;
 
-            if let Some(respawn) = self.respawn_point.load().as_ref() {
-                nbt.put_bool(true);
-                nbt.put_int(respawn.position.0.x);
-                nbt.put_int(respawn.position.0.y);
-                nbt.put_int(respawn.position.0.z);
-                nbt.put_string(respawn.dimension.minecraft_name);
-                nbt.put_bool(respawn.force);
-            } else {
-                nbt.put_bool(false);
+            nbt.put_string(
+                "Dimension",
+                self.world().dimension.minecraft_name.to_string(),
+            );
+
+            if let Some(respawn) = self.respawn_point.lock().await.as_ref() {
+                nbt.put_int("SpawnX", respawn.position.0.x);
+                nbt.put_int("SpawnY", respawn.position.0.y);
+                nbt.put_int("SpawnZ", respawn.position.0.z);
+                nbt.put_string(
+                    "SpawnDimension",
+                    respawn.dimension.minecraft_name.to_owned(),
+                );
+                nbt.put_bool("SpawnForced", respawn.force);
             }
-            nbt.put_int(self.enchantment_seed.load(Ordering::Relaxed));
+            nbt.put_int("XpSeed", self.enchantment_seed.load(Ordering::Relaxed));
         })
     }
 
-    fn read_nbt<'a>(&'a mut self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn read_nbt<'a>(&'a mut self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async move {
-            let _version = nbt.get_int().unwrap_or(0);
-            let _dimension_name = nbt.get_string().unwrap_or_default();
-
             self.living_entity.read_nbt(nbt).await;
             self.inventory.read_nbt_non_mut(nbt).await;
             self.ender_chest_inventory.read_nbt_non_mut(nbt).await;
             self.abilities.lock().await.read_nbt(nbt).await;
 
-            let total_exp = nbt.get_int().unwrap_or(0);
+            // Load from total XP
+            let total_exp = nbt.get_int("XpTotal").unwrap_or(0);
             let (level, points) = experience::total_to_level_and_points(total_exp);
             let progress = experience::progress_in_level(level, points);
             self.experience_level.store(level, Ordering::Relaxed);
@@ -3713,38 +3852,44 @@ impl NBTStorage for Player {
             self.experience_points.store(points, Ordering::Relaxed);
 
             self.gamemode.store(
-                GameMode::try_from(nbt.get_byte().unwrap_or(0)).unwrap_or(GameMode::Survival),
+                GameMode::try_from(nbt.get_byte("playerGameType").unwrap_or(0))
+                    .unwrap_or(GameMode::Survival),
             );
 
-            if nbt.get_bool().unwrap_or(false) {
-                self.previous_gamemode
-                    .store(GameMode::try_from(nbt.get_byte().unwrap_or(0)).ok());
-            }
+            self.previous_gamemode.store(
+                nbt.get_byte("previousPlayerGameType")
+                    .and_then(|byte| GameMode::try_from(byte).ok()),
+            );
 
-            self.has_played_before
-                .store(nbt.get_bool().unwrap_or(false), Ordering::Relaxed);
+            self.has_played_before.store(
+                nbt.get_bool("HasPlayedBefore").unwrap_or(false),
+                Ordering::Relaxed,
+            );
 
             self.hunger_manager.read_nbt(nbt).await;
 
-            if nbt.get_bool().unwrap_or(false) {
-                let x = nbt.get_int().unwrap_or(0);
-                let y = nbt.get_int().unwrap_or(0);
-                let z = nbt.get_int().unwrap_or(0);
+            // Load any saved spawnpoint data (SpawnX/SpawnY/SpawnZ, SpawnDimension, SpawnForced)
+            if let (Some(x), Some(y), Some(z)) = (
+                nbt.get_int("SpawnX"),
+                nbt.get_int("SpawnY"),
+                nbt.get_int("SpawnZ"),
+            ) {
                 let dim = nbt
-                    .get_string()
-                    .ok()
-                    .and_then(|s| Dimension::from_name(s.as_str()).copied())
-                    .unwrap_or(self.world().dimension);
-                let force = nbt.get_bool().unwrap_or(false);
-                self.respawn_point.store(Some(RespawnPoint {
+                    .get_string("SpawnDimension")
+                    .and_then(|s| Dimension::from_name(s).cloned())
+                    .unwrap_or_else(|| self.world().dimension.clone());
+                let force = nbt.get_bool("SpawnForced").unwrap_or(false);
+                *self.respawn_point.lock().await = Some(RespawnPoint {
                     dimension: dim,
                     position: BlockPos(Vector3::new(x, y, z)),
                     yaw: 0.0,
                     force,
-                }));
+                });
             }
-            self.enchantment_seed
-                .store(nbt.get_int().unwrap_or(rand::random()), Ordering::Relaxed);
+            self.enchantment_seed.store(
+                nbt.get_int("XpSeed").unwrap_or(rand::random()),
+                Ordering::Relaxed,
+            );
         })
     }
 }
@@ -3752,76 +3897,106 @@ impl NBTStorage for Player {
 impl NBTStorageInit for Player {}
 
 impl NBTStorage for PlayerInventory {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async move {
             // Save the selected slot (hotbar)
-            nbt.put_u8(self.get_selected_slot());
+            nbt.put_int("SelectedItemSlot", i32::from(self.get_selected_slot()));
 
-            // Save items count then items
-            let mut present_items = Vec::new();
+            // Create inventory list with the correct capacity (inventory size)
+            let mut items: Vec<NbtTag> = Vec::with_capacity(41);
             for (i, item) in self.main_inventory.iter().enumerate() {
                 let stack = item.lock().await;
                 if !stack.is_empty() {
-                    present_items.push((i as u8, stack.clone()));
+                    let mut item_compound = NbtCompound::new();
+                    item_compound.put_byte("Slot", i as i8);
+                    stack.write_item_stack(&mut item_compound);
+                    drop(stack);
+                    items.push(NbtTag::Compound(item_compound));
                 }
-            }
-            nbt.put_u32(present_items.len() as u32);
-            for (slot, stack) in present_items {
-                nbt.put_u8(slot);
-                stack.write_item_stack_pnbt(nbt);
             }
 
-            // Save equipment
-            #[allow(clippy::default_trait_access)]
-            for slot in [
-                EquipmentSlot::OffHand(Default::default()),
-                EquipmentSlot::Head(Default::default()),
-                EquipmentSlot::Chest(Default::default()),
-                EquipmentSlot::Legs(Default::default()),
-                EquipmentSlot::Feet(Default::default()),
-            ] {
-                // Find the actual slot in self.equipment_slots
-                let mut found = false;
-                for s in self.equipment_slots.values() {
-                    if mem::discriminant(s) == mem::discriminant(&slot) {
-                        let stack_binding = self.entity_equipment.lock().await.get(s);
-                        let stack = stack_binding.lock().await;
-                        if !stack.is_empty() {
-                            nbt.put_bool(true);
-                            stack.write_item_stack_pnbt(nbt);
-                            found = true;
+            let mut equipment_compound = NbtCompound::new();
+            for slot in self.equipment_slots.values() {
+                let stack_binding = self.entity_equipment.lock().await.get(slot);
+                let stack = stack_binding.lock().await;
+                if !stack.is_empty() {
+                    let mut item_compound = NbtCompound::new();
+                    stack.write_item_stack(&mut item_compound);
+                    drop(stack);
+                    match slot {
+                        EquipmentSlot::OffHand(_) => {
+                            equipment_compound.put_compound("offhand", item_compound);
                         }
-                        break;
+                        EquipmentSlot::Feet(_) => {
+                            equipment_compound.put_compound("feet", item_compound);
+                        }
+                        EquipmentSlot::Legs(_) => {
+                            equipment_compound.put_compound("legs", item_compound);
+                        }
+                        EquipmentSlot::Chest(_) => {
+                            equipment_compound.put_compound("chest", item_compound);
+                        }
+                        EquipmentSlot::Head(_) => {
+                            equipment_compound.put_compound("head", item_compound);
+                        }
+                        _ => {
+                            warn!("Invalid equipment slot for a player");
+                        }
                     }
                 }
-                if !found {
-                    nbt.put_bool(false);
-                }
             }
+            nbt.put_compound("equipment", equipment_compound);
+            nbt.put("Inventory", NbtTag::List(items));
         })
     }
 
-    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
-        Box::pin(async move {
+    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
+        Box::pin(async {
             // Read selected hotbar slot
-            self.set_selected_slot(nbt.get_u8().unwrap_or(0));
-
+            self.set_selected_slot(nbt.get_int("SelectedItemSlot").unwrap_or(0) as u8);
             // Process inventory list
-            let items_len = nbt.get_u32().unwrap_or(0) as usize;
-            for _ in 0..items_len {
-                let slot = nbt.get_u8().unwrap_or(0) as usize;
-                if let Some(item_stack) = ItemStack::read_item_stack_pnbt(nbt) {
-                    self.set_stack(slot, item_stack).await;
+            if let Some(inventory_list) = nbt.get_list("Inventory") {
+                for tag in inventory_list {
+                    if let Some(item_compound) = tag.extract_compound()
+                        && let Some(slot_byte) = item_compound.get_byte("Slot")
+                    {
+                        let slot = slot_byte as usize;
+                        if let Some(item_stack) = ItemStack::read_item_stack(item_compound) {
+                            self.set_stack(slot, item_stack).await;
+                        }
+                    }
                 }
             }
 
-            // Read equipment
-            for slot_idx in [40, 39, 38, 37, 36] {
-                // offhand, head, chest, legs, feet
-                if nbt.get_bool().unwrap_or(false)
-                    && let Some(item_stack) = ItemStack::read_item_stack_pnbt(nbt)
+            if let Some(equipment) = nbt.get_compound("equipment") {
+                if let Some(offhand) = equipment.get_compound("offhand")
+                    && let Some(item_stack) = ItemStack::read_item_stack(offhand)
                 {
-                    self.set_stack(slot_idx, item_stack).await;
+                    self.set_stack(40, item_stack).await;
+                }
+
+                if let Some(head) = equipment.get_compound("head")
+                    && let Some(item_stack) = ItemStack::read_item_stack(head)
+                {
+                    self.set_stack(39, item_stack).await;
+                }
+
+                if let Some(chest) = equipment.get_compound("chest")
+                    && let Some(item_stack) = ItemStack::read_item_stack(chest)
+                {
+                    self.set_stack(38, item_stack).await;
+                }
+
+                if let Some(legs) = equipment.get_compound("legs")
+                    && let Some(item_stack) = ItemStack::read_item_stack(legs)
+                {
+                    self.set_stack(37, item_stack).await;
+                }
+
+                if let Some(feet) = equipment.get_compound("feet")
+                    && let Some(item_stack) = ItemStack::read_item_stack(feet)
+                {
+                    self.set_stack(36, item_stack).await;
                 }
             }
         })
@@ -3831,32 +4006,38 @@ impl NBTStorage for PlayerInventory {
 impl NBTStorageInit for PlayerInventory {}
 
 impl NBTStorage for EnderChestInventory {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async {
-            // Save items count then items
-            let mut present_items = Vec::new();
+            // Create item list with the correct capacity (inventory size)
+            let mut items: Vec<NbtTag> = Vec::with_capacity(Self::INVENTORY_SIZE);
             for (i, item) in self.items.iter().enumerate() {
                 let stack = item.lock().await;
                 if !stack.is_empty() {
-                    present_items.push((i as u8, stack.clone()));
+                    let mut item_compound = NbtCompound::new();
+                    item_compound.put_byte("Slot", i as i8);
+                    stack.write_item_stack(&mut item_compound);
+                    drop(stack);
+                    items.push(NbtTag::Compound(item_compound));
                 }
             }
-            nbt.put_u32(present_items.len() as u32);
-            for (slot, stack) in present_items {
-                nbt.put_u8(slot);
-                stack.write_item_stack_pnbt(nbt);
-            }
+
+            nbt.put("EnderItems", NbtTag::List(items));
         })
     }
 
-    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async {
             // Process item list
-            let items_len = nbt.get_u32().unwrap_or(0) as usize;
-            for _ in 0..items_len {
-                let slot = nbt.get_u8().unwrap_or(0) as usize;
-                if let Some(item_stack) = ItemStack::read_item_stack_pnbt(nbt) {
-                    self.set_stack(slot, item_stack).await;
+            if let Some(item_list) = nbt.get_list("EnderItems") {
+                for tag in item_list {
+                    if let Some(item_compound) = tag.extract_compound()
+                        && let Some(slot_byte) = item_compound.get_byte("Slot")
+                    {
+                        let slot = slot_byte as usize;
+                        if let Some(item_stack) = ItemStack::read_item_stack(item_compound) {
+                            self.set_stack(slot, item_stack).await;
+                        }
+                    }
                 }
             }
         })
@@ -4038,27 +4219,31 @@ pub struct Abilities {
 }
 
 impl NBTStorage for Abilities {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async {
-            nbt.put_bool(self.invulnerable);
-            nbt.put_bool(self.flying);
-            nbt.put_bool(self.allow_flying);
-            nbt.put_bool(self.creative);
-            nbt.put_bool(self.allow_modify_world);
-            nbt.put_float(self.fly_speed);
-            nbt.put_float(self.walk_speed);
+            let mut component = NbtCompound::new();
+            component.put_bool("invulnerable", self.invulnerable);
+            component.put_bool("flying", self.flying);
+            component.put_bool("mayfly", self.allow_flying);
+            component.put_bool("instabuild", self.creative);
+            component.put_bool("mayBuild", self.allow_modify_world);
+            component.put_float("flySpeed", self.fly_speed);
+            component.put_float("walkSpeed", self.walk_speed);
+            nbt.put_compound("abilities", component);
         })
     }
 
-    fn read_nbt<'a>(&'a mut self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn read_nbt<'a>(&'a mut self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async move {
-            self.invulnerable = nbt.get_bool().unwrap_or(false);
-            self.flying = nbt.get_bool().unwrap_or(false);
-            self.allow_flying = nbt.get_bool().unwrap_or(false);
-            self.creative = nbt.get_bool().unwrap_or(false);
-            self.allow_modify_world = nbt.get_bool().unwrap_or(false);
-            self.fly_speed = nbt.get_float().unwrap_or(0.05);
-            self.walk_speed = nbt.get_float().unwrap_or(0.1);
+            if let Some(component) = nbt.get_compound("abilities") {
+                self.invulnerable = component.get_bool("invulnerable").unwrap_or(false);
+                self.flying = component.get_bool("flying").unwrap_or(false);
+                self.allow_flying = component.get_bool("mayfly").unwrap_or(false);
+                self.creative = component.get_bool("instabuild").unwrap_or(false);
+                self.allow_modify_world = component.get_bool("mayBuild").unwrap_or(false);
+                self.fly_speed = component.get_float("flySpeed").unwrap_or(0.05);
+                self.walk_speed = component.get_float("walkSpeed").unwrap_or(0.1);
+            }
         })
     }
 }
@@ -4105,7 +4290,7 @@ impl Abilities {
 }
 
 /// Represents the player's stored respawn point (bed/anchor/forced).
-#[derive(Copy, Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RespawnPoint {
     pub dimension: Dimension,
     pub position: BlockPos,
@@ -4113,9 +4298,6 @@ pub struct RespawnPoint {
     pub force: bool,
 }
 
-/// Calculated respawn position ready for use.
-/// Returned by `calculate_respawn_point()`.
-#[derive(Debug, Clone)]
 pub struct CalculatedRespawnPoint {
     /// The exact position to spawn at (centered in block).
     pub position: Vector3<f64>,

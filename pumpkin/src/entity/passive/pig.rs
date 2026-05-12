@@ -16,7 +16,7 @@ use crate::entity::{
     mob::{Mob, MobEntity},
     player::Player,
 };
-use pumpkin_nbt::pnbt::PNbtCompound;
+use pumpkin_nbt::compound::NbtCompound;
 
 const PIG_FOOD: &[&Item] = &[
     &Item::CARROT,
@@ -63,11 +63,11 @@ impl PigEntity {
 }
 
 impl NBTStorage for PigEntity {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         self.mob_entity.living_entity.write_nbt(nbt)
     }
 
-    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
         self.mob_entity.living_entity.read_nbt_non_mut(nbt)
     }
 }

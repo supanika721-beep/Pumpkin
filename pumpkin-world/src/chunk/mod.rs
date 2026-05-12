@@ -30,7 +30,7 @@ pub const SUBCHUNK_VOLUME: usize = CHUNK_AREA * CHUNK_WIDTH;
 #[derive(Error, Debug)]
 pub enum ChunkReadingError {
     #[error("Io error: {0}")]
-    IoError(std::io::ErrorKind),
+    IoError(std::io::Error),
     #[error("Invalid header")]
     InvalidHeader,
     #[error("Region is invalid")]
@@ -46,7 +46,7 @@ pub enum ChunkReadingError {
 #[derive(Error, Debug)]
 pub enum ChunkWritingError {
     #[error("Io error: {0}")]
-    IoError(std::io::ErrorKind),
+    IoError(std::io::Error),
     #[error("Compression error {0}")]
     Compression(CompressionError),
     #[error("Chunk serializing error: {0}")]
@@ -84,14 +84,12 @@ pub struct ChunkData {
     pub dirty: AtomicBool,
 }
 
-use pumpkin_nbt::pnbt::PNbtCompound;
-
 pub struct ChunkEntityData {
     /// Chunk X
     pub x: i32,
     /// Chunk Z
     pub z: i32,
-    pub data: Mutex<FxHashMap<uuid::Uuid, PNbtCompound>>,
+    pub data: Mutex<FxHashMap<uuid::Uuid, NbtCompound>>,
 
     pub dirty: AtomicBool,
 }
@@ -174,6 +172,7 @@ impl TryFrom<usize> for ChunkHeightmapType {
 }
 
 impl ChunkHeightmapType {
+    #[must_use]
     pub fn is_opaque(&self, block_state: &BlockState) -> bool {
         let block = Block::get_raw_id_from_state_id(block_state.id);
         match self {

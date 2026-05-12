@@ -11,7 +11,7 @@ use crate::entity::{
     },
     mob::{Mob, MobEntity},
 };
-use pumpkin_nbt::pnbt::PNbtCompound;
+use pumpkin_nbt::compound::NbtCompound;
 
 pub mod bogged;
 pub mod parched;
@@ -58,11 +58,11 @@ impl SkeletonEntityBase {
 }
 
 impl NBTStorage for SkeletonEntityBase {
-    fn write_nbt<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         self.mob_entity.living_entity.write_nbt(nbt)
     }
 
-    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a mut PNbtCompound) -> NbtFuture<'a, ()> {
+    fn read_nbt_non_mut<'a>(&'a self, nbt: &'a NbtCompound) -> NbtFuture<'a, ()> {
         self.mob_entity.living_entity.read_nbt_non_mut(nbt)
     }
 }

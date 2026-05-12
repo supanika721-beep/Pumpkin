@@ -41,7 +41,9 @@ use crate::world::{World, chunker};
 use pumpkin_data::block_properties::{
     BlockProperties, CommandBlockLikeProperties, WaterLikeProperties,
 };
-use pumpkin_data::data_component_impl::{ConsumableImpl, EquipmentSlot, EquippableImpl, FoodImpl};
+use pumpkin_data::data_component_impl::{
+    BlocksAttacksImpl, ConsumableImpl, EquipmentSlot, EquippableImpl, FoodImpl,
+};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -2335,7 +2337,9 @@ impl JavaClient {
             }
         }
 
-        if held.get_data_component::<ConsumableImpl>().is_some() {
+        if held.get_data_component::<ConsumableImpl>().is_some()
+            || held.get_data_component::<BlocksAttacksImpl>().is_some()
+        {
             // If its food we want to make sure we can actually consume it
             if let Some(food) = held.get_data_component::<FoodImpl>() {
                 if player.abilities.lock().await.invulnerable

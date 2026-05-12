@@ -1,7 +1,9 @@
 use crate::block::entities::BlockEntity;
 use dashmap::DashMap;
+use pumpkin_data::chunk::Biome;
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
+use pumpkin_world::generation::proto_chunk::GenerationCache;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Weak};
@@ -9,11 +11,13 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::atomic::Ordering,
 };
+use tokio::runtime::Handle;
 use tracing::{debug, error, info, trace, warn};
 
 pub mod chunker;
 pub mod explosion;
 pub mod loot;
+pub mod map;
 pub mod portal;
 pub mod time;
 
@@ -57,12 +61,12 @@ use pumpkin_data::{
     item_stack::ItemStack,
     particle::Particle,
     sound::{Sound, SoundCategory},
+    sound_id_remap::remap_sound_id_for_version,
     world::{RAW, WorldEvent},
 };
 use pumpkin_data::{BlockDirection, BlockState, translation};
 use pumpkin_inventory::screen_handler::InventoryPlayer;
-use pumpkin_nbt::pnbt::PNbtCompound;
-use pumpkin_nbt::to_bytes_unnamed;
+use pumpkin_nbt::{compound::NbtCompound, to_bytes_unnamed};
 use pumpkin_protocol::bedrock::client::set_actor_data::{
     CSetActorData, EntityMetadata, MetadataValue, PropertySyncData, entity_data_flag,
     entity_data_key,
@@ -120,7 +124,7 @@ use pumpkin_util::{
     random::{RandomImpl, get_seed, xoroshiro128::Xoroshiro},
 };
 use pumpkin_world::inventory::Clearable;
-use pumpkin_world::world::GetBlockError;
+use pumpkin_world::world::{GetBlockError, WorldPortalExt};
 use pumpkin_world::{
     BlockStateId, CURRENT_BEDROCK_MC_VERSION, biome, chunk::io::Dirtiable, inventory::Inventory,
 };
@@ -146,7 +150,7 @@ pub mod weather;
 use crate::world::natural_spawner::{SpawnState, spawn_for_chunk};
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::effect::StatusEffect;
-use pumpkin_world::chunk::ChunkHeightmapType::MotionBlocking;
+use pumpkin_world::chunk::ChunkHeightmapType::{self, MotionBlocking};
 use uuid::Uuid;
 use weather::Weather;
 
@@ -237,7 +241,8 @@ impl World {
 
         // Load portal POI from disk (PoiStorage::new automatically loads from disk if files exist)
         let portal_poi = portal::PortalPoiStorage::new(&level.level_folder.root_folder);
-
+        let dragon_fight =
+            (dimension == Dimension::THE_END).then(|| Mutex::new(dragon_fight::DragonFight::new()));
         Self {
             uuid: Uuid::new_v4(),
             level,
@@ -255,8 +260,7 @@ impl World {
             synced_block_event_queue: Mutex::new(Vec::new()),
             unsent_block_changes: Mutex::new(HashMap::new()),
             portal_poi: Mutex::new(portal_poi),
-            dragon_fight: (dimension == Dimension::THE_END)
-                .then(|| Mutex::new(dragon_fight::DragonFight::new())),
+            dragon_fight,
             spawn_state: ArcSwap::new(Arc::new(SpawnState::empty())),
             active_chunks: ArcSwap::new(Arc::new(FxHashSet::default())),
             server,
@@ -330,7 +334,7 @@ impl World {
         let base_entity = entity.get_entity();
         let uuid = base_entity.entity_uuid;
         let current_chunk_coordinate = base_entity.block_pos.load().chunk_position();
-        let mut nbt = PNbtCompound::new();
+        let mut nbt = NbtCompound::new();
         entity.write_nbt(&mut nbt).await;
         if let Some(old_chunk) = base_entity.first_loaded_chunk_position.load() {
             let old_chunk = old_chunk.to_vec2_i32();
@@ -877,7 +881,7 @@ impl World {
         }
         let block_entity_elapsed = block_entity_start.elapsed();
 
-        //self.level.chunk_loading.lock().unwrap().send_change();
+        self.level.chunk_loading.lock().unwrap().send_change();
 
         // Tick the End dragon fight (only on THE_END worlds).
         if let Some(ref fight_mutex) = self.dragon_fight {
@@ -1570,6 +1574,24 @@ impl World {
             .await
     }
 
+    pub async fn get_heightmap_height(
+        &self,
+        height_map: ChunkHeightmapType,
+        x: i32,
+        z: i32,
+    ) -> i32 {
+        let chunk_pos = Vector2::new(x >> 4, z >> 4);
+        self.level
+            .get_or_fetch_chunk(chunk_pos, |chunk| {
+                chunk
+                    .heightmap
+                    .lock()
+                    .unwrap()
+                    .get(height_map, x, z, self.min_y)
+            })
+            .await
+    }
+
     #[allow(clippy::too_many_lines)]
     pub async fn spawn_bedrock_player(
         &self,
@@ -1880,7 +1902,7 @@ impl World {
                 false,
                 true,
                 false,
-                self.dimension,
+                self.dimension.clone(),
                 biome::hash_seed(self.level.seed.0), // seed
                 gamemode as u8,
                 player
@@ -2351,8 +2373,12 @@ impl World {
         } else {
             Particle::ExplosionEmitter
         };
-        let sound = IdOr::<SoundEvent>::Id(Sound::EntityGenericExplode as u16);
         for player in self.players.load().iter() {
+            let mut sound_id = Sound::EntityGenericExplode as u16;
+            if let ClientPlatform::Java(java_client) = &player.client {
+                sound_id = remap_sound_id_for_version(sound_id, java_client.version.load());
+            }
+            let sound = IdOr::<SoundEvent>::Id(sound_id);
             if player.position().squared_distance_to_vec(&position) > 4096.0 {
                 continue;
             }
@@ -2423,7 +2449,7 @@ impl World {
                     ),
                     spawn_yaw,
                     spawn_pitch,
-                    self.dimension,
+                    self.dimension.clone(),
                 )
             };
 
@@ -2643,46 +2669,34 @@ impl World {
                 };
                 let position = Vector2::new(chunk.x, chunk.z);
 
-                let chunk = if level.is_chunk_watched(&position) {
-                    chunk
-                } else {
+                if !level.is_chunk_watched(&position) {
                     trace!(
                         "Received chunk {:?}, but it is no longer watched... cleaning",
                         &position
                     );
                     let mut ids_to_remove = Vec::new();
 
-                    let mut entities_to_load = Vec::new();
-                    let mut entity_data = Vec::new();
-                    {
-                        let mut data = chunk.data.lock().await;
-                        for (uuid, entity_nbt) in data.iter_mut() {
-                            let Ok(id) = entity_nbt.get_string() else {
-                                warn!("Entity has no ID");
-                                continue;
-                            };
-                            let Some(entity_type) = EntityType::from_name(&id) else {
-                                warn!("Entity has no valid Entity Type {id}");
-                                continue;
-                            };
-                            entity_data.push((*uuid, entity_type, entity_nbt.clone()));
-                        }
-                    }
-
-                    for (uuid, entity_type, mut entity_nbt) in entity_data {
+                    for (uuid, entity_nbt) in chunk.data.lock().await.iter() {
+                        let Some(id) = entity_nbt.get_string("id") else {
+                            warn!("Entity has no ID");
+                            continue;
+                        };
+                        let Some(entity_type) =
+                            EntityType::from_name(id.strip_prefix("minecraft:").unwrap_or(id))
+                        else {
+                            warn!("Entity has no valid Entity Type {id}");
+                            continue;
+                        };
                         // Pos is zero since it will read from nbt
                         let entity =
-                            from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, uuid).await;
-                        entity_nbt.read_pos = 0;
-                        entity.read_nbt_non_mut(&mut entity_nbt).await;
-                        entities_to_load.push(entity);
-                    }
-
-                    for entity in entities_to_load {
+                            from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, *uuid)
+                                .await;
+                        entity.read_nbt_non_mut(entity_nbt).await;
                         let base_entity = entity.get_entity();
+
                         ids_to_remove.push(VarInt(base_entity.entity_id));
 
-                        let mut nbt = PNbtCompound::new();
+                        let mut nbt = NbtCompound::new();
                         entity.write_nbt(&mut nbt).await;
                         if let Some(old_chunk) = base_entity.first_loaded_chunk_position.load() {
                             let old_chunk = old_chunk.to_vec2_i32();
@@ -2694,65 +2708,40 @@ impl World {
 
                             let mut data = chunk.data.lock().await;
                             if old_chunk == current_chunk_coordinate {
-                                data.insert(base_entity.entity_uuid, nbt.clone());
-                                return;
+                                data.insert(*uuid, nbt);
+                                continue;
                             }
 
                             // The chunk has changed, lets remove the entity from the old chunk
-                            data.remove(&base_entity.entity_uuid);
+                            data.remove(uuid);
                         }
-                        chunk
-                            .data
-                            .lock()
-                            .await
-                            .insert(base_entity.entity_uuid, nbt.clone());
-                        chunk.mark_dirty(true);
                     }
-
                     if !ids_to_remove.is_empty() {
-                        world.entities.rcu(|current_entities| {
-                            let mut new_entities = (**current_entities).clone();
-                            new_entities.retain(|e| {
-                                !ids_to_remove.contains(&VarInt(e.get_entity().entity_id))
-                            });
-                            new_entities
-                        });
                         player
                             .client
                             .enqueue_packet(&CRemoveEntities::new(&ids_to_remove))
                             .await;
                     }
-                    level.clean_entity_chunk(&position);
-
                     continue 'main;
-                };
+                }
 
                 // Add all new Entities to the world
                 let mut entities_to_add: Vec<Arc<dyn EntityBase>> = Vec::new();
-                let mut entity_data = Vec::new();
-                {
-                    let mut data = chunk.data.lock().await;
-                    for (uuid, entity_nbt) in data.iter_mut() {
-                        let Ok(id) = entity_nbt.get_string() else {
-                            debug!("Entity has no ID");
-                            continue;
-                        };
-                        let Some(entity_type) =
-                            EntityType::from_name(id.strip_prefix("minecraft:").unwrap_or(&id))
-                        else {
-                            warn!("Entity has no valid Entity Type {id}");
-                            continue;
-                        };
-                        entity_data.push((*uuid, entity_type, entity_nbt.clone()));
-                    }
-                }
-
-                for (uuid, entity_type, mut entity_nbt) in entity_data {
+                for (uuid, entity_nbt) in chunk.data.lock().await.iter() {
+                    let Some(id) = entity_nbt.get_string("id") else {
+                        debug!("Entity has no ID");
+                        continue;
+                    };
+                    let Some(entity_type) =
+                        EntityType::from_name(id.strip_prefix("minecraft:").unwrap_or(id))
+                    else {
+                        warn!("Entity has no valid Entity Type {id}");
+                        continue;
+                    };
                     // Pos is zero since it will read from nbt
                     let entity =
-                        from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, uuid).await;
-                    entity_nbt.read_pos = 0;
-                    entity.read_nbt_non_mut(&mut entity_nbt).await;
+                        from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, *uuid).await;
+                    entity.read_nbt_non_mut(entity_nbt).await;
                     let base_entity = entity.get_entity();
                     player
                         .client
@@ -3186,14 +3175,9 @@ impl World {
     pub async fn add_entity_silent(&self, entity: Arc<dyn EntityBase>) {
         let base_entity = entity.get_entity();
 
-        // Update biome
         let block_pos = base_entity.block_pos.load();
-        let biome = self.level.get_rough_biome(&block_pos).await;
-        base_entity.current_biome.store(Arc::new(biome));
-        base_entity.last_biome_update_pos.store(block_pos);
-
         let chunk_coordinate = block_pos.chunk_position();
-        let mut nbt = PNbtCompound::new();
+        let mut nbt = NbtCompound::new();
         entity.write_nbt(&mut nbt).await;
 
         self.spawn_state.load().add_entity(self, entity.as_ref());
@@ -3423,6 +3407,26 @@ impl World {
             .await;
 
         replaced_block_state_id
+    }
+
+    pub async fn get_max_local_raw_brightness(&self, pos: &BlockPos) -> u8 {
+        let sky_light = self.get_sky_light_level(pos).await;
+        let block_light = self.get_block_light_level(pos).await.unwrap();
+        sky_light.max(block_light) // TODO: getSkyDarken
+    }
+
+    pub async fn get_block_light_level(&self, position: &BlockPos) -> Option<u8> {
+        self.level
+            .light_engine
+            .get_block_light_level(&self.level, position)
+            .await
+    }
+
+    pub async fn get_sky_light_level(&self, position: &BlockPos) -> u8 {
+        self.level
+            .light_engine
+            .get_sky_light_level(&self.level, position)
+            .await
     }
 
     pub async fn schedule_block_tick(
@@ -4300,5 +4304,54 @@ impl BlockAccessor for World {
         position: &'a BlockPos,
     ) -> Pin<Box<dyn Future<Output = (&'static Block, &'static BlockState)> + Send + 'a>> {
         Box::pin(async move { self.get_block_and_state(position).await })
+    }
+}
+
+pub struct WorldPortal(pub Arc<World>, pub Handle);
+
+// Pure Beauty :cap:
+impl WorldPortalExt for WorldPortal {
+    fn can_place_at(
+        &self,
+        block: &pumpkin_data::Block,
+        state: &BlockState,
+        block_accessor: &dyn BlockAccessor,
+        block_pos: &BlockPos,
+    ) -> bool {
+        let handle = &self.1;
+
+        handle.block_on(async move {
+            self.0
+                .block_registry
+                .can_place_at(
+                    None,
+                    None,
+                    block_accessor,
+                    None,
+                    block,
+                    state,
+                    block_pos,
+                    None,
+                    None,
+                )
+                .await
+        })
+    }
+
+    fn spawn_mobs_for_chunk_generation(
+        &self,
+        cache: &mut dyn GenerationCache,
+        biome: &'static Biome,
+        chunk_x: i32,
+        chunk_z: i32,
+    ) {
+        let handle = &self.1;
+
+        handle.block_on(async move {
+            natural_spawner::spawn_mobs_for_chunk_generation(
+                &self.0, cache, biome, chunk_x, chunk_z,
+            )
+            .await;
+        });
     }
 }
